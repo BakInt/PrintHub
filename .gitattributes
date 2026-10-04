@@ -1,0 +1,17 @@
+# 默认：由 git 自动判定文本，统一以 LF 存入仓库
+* text=auto eol=lf
+
+# Shell 脚本 / 容器脚本必须保持 LF，否则 Linux 容器内 shebang 失效
+*.sh    text eol=lf
+*.conf  text eol=lf
+
+# Windows 侧批处理保持 CRLF
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# 二进制文件不做行尾转换
+*.png binary
+*.jpg binary
+*.pdf binary
+*.db  binary

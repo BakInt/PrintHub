@@ -1,0 +1,20 @@
+services:
+  cloud-print:
+    # 需要从源码构建就用 `docker compose up -d --build`（build 上下文是仓库根目录，
+    # 即本文件与 Dockerfile 所在目录）；也可以直接拉取已推送的镜像。
+    build: .
+    image: baklnt/printhub:v1.4
+    container_name: cloud-print
+    restart: unless-stopped
+    ports:
+      - '5978:8000'
+    volumes:
+      # 唯一持久化挂载点：数据库、上传件、备份、日志、CUPS 驱动、config.json 全在这里。
+      # 备份 = 停止容器后复制整个 ./config 目录。
+      - ./config:/app/config
+    environment:
+      - TZ=Asia/Shanghai
+      # 允许局域网内其它机器用本机 IP 访问（否则 TrustedHostMiddleware 会返回
+      # "Invalid host header"）。部署级配置都写在 ./config/config.json 里，这里只保留
+      # 容器专属的环境变量；要收紧访问限制就编辑 config.json 的 trusted_hosts。
+      - TRUSTED_HOSTS=*

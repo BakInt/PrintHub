@@ -1,0 +1,47 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- 环境变量与密钥（禁止提交真实配置）----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ---- 运行时数据卷（SQLite、上传、备份、日志）----
+config/
+storage/
+uploads/
+logs/
+backups/
+*.db
+*.sqlite
+*.sqlite3
+
+# ---- 前端依赖与构建产物 ----
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+node_modules/
+
+# ---- 打包产物快照 ----
+release/
+
+# ---- 编辑器 / 操作系统 ----
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# ---- NAS 同步冲突副本 ----
+*的冲突副本*
+*conflicted copy*
