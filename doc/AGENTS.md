@@ -61,6 +61,8 @@
 
 仓库中存在若干带 `BakingdeMini.lan的冲突副本...` 的同步冲突副本。正常维护时以不带冲突副本后缀的正式文件为准，除非用户明确要求从冲突副本恢复内容。`release/` 是打包产物快照，通常不要作为源码修改入口。
 
+仓库根目录的 `.gitattributes` 固定行尾策略：`* text=auto eol=lf` 让全部文本文件以 LF 入库（含 `*.sh`/`*.conf`，保证 Linux 容器内 shebang 可用），Windows 侧 `*.bat`/`*.cmd`/`*.ps1` 保持 CRLF，图片/PDF/DB 标记为 binary。因此在 Windows 上工作区若出现 CRLF，`git add` 时会提示 `CRLF will be replaced by LF`，这是预期行为，不要为了消除警告去改 `.gitattributes`。忽略规则集中在 `.gitignore`（Python 缓存、`.env*`、`config/`、`storage/`、`logs/`、`frontend/node_modules/`、`frontend/dist/`、`release/`、编辑器目录、NAS 冲突副本）。
+
 ## 4. 后端入口和生命周期
 
 `backend/app/main.py` 创建 FastAPI 应用：
@@ -509,3 +511,11 @@ AdminView.vue 打印机 tab
 - 改后端业务：优先运行 `backend/tests/smoke_test.py`，并使用临时数据库和临时上传目录。
 - 改前端交互：运行 `npm --prefix frontend run build`，涉及页面布局时再启动前端做浏览器检查。
 - 改真实打印：先在受控环境（测试用 CUPS 队列或备用打印机）跑通下单和后台测试页，确认无误后再接入生产打印机（`cups` 或 `system`）。
+
+## 14. 版本控制与仓库发布
+
+- 远端仓库：`https://github.com/BakInt/PrintHub`（public），默认分支 `main`，本地 `origin` 指向它。首次发布提交为 `7d96932e4cc7238997763d8af3a632f62f336170`（`chore: initial commit - PrintHub 云打印自助系统`，66 个文件），采用强制推送覆盖了远端原有的占位 `LICENSE`/`README.md`，两条历史线无共同祖先。
+- 纳入版本控制的是源码/配置/文档共 66 个文件；`.gitignore` 排除 `frontend/node_modules/`、`frontend/dist/`、`config/`、`storage/`、`logs/`、`backups/`、`*.db`、`__pycache__/`、`.venv/`、`release/`、`.idea/`、`.vscode/` 与 NAS 冲突副本。空目录 `preview/` 不被 git 跟踪，不会出现在远端。
+- 提交身份是仓库级配置：`user.name=BakInt`、`user.email=BakInt@users.noreply.github.com`（未改全局/系统配置）。推送凭据由 Git Credential Manager 提供，Windows 凭据管理器里已有 `git:https://github.com`（用户 `BakInt`）条目，因此 `git push` 无需再交互登录。
+- 更新代码后的发布流程：`git add -A` → `git commit -m "..."` → `git push origin main`。若远端历史被本地覆盖过（如上），推送需带 `--force`；日常增量提交正常推送即可。
+- 不要在仓库里提交 `config/`、数据库、上传文件或 `.env*`；这些都已由 `.gitignore` 排除。若新增其它运行时产物目录，同步补 `.gitignore` 规则。
