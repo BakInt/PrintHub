@@ -1,9 +1,28 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="light">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
     <title>云打印系统</title>
+    <script>
+      // 首屏主题判定：必须在样式生效前执行，避免「先亮后暗」的闪烁。
+      // 规则与 src/stores/theme.js 完全一致：localStorage 有记录用记录，否则跟随系统。
+      // 配色变量分两套：PC 端与移动端（≤767px）各自定义，见 src/assets/theme.css。
+      (function () {
+        var theme = null
+        try {
+          theme = window.localStorage.getItem('cloud-print-theme')
+        } catch (e) {
+          theme = null
+        }
+        if (theme !== 'light' && theme !== 'dark') {
+          theme = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+        }
+        document.documentElement.dataset.theme = theme
+        document.documentElement.style.colorScheme = theme
+      })()
+    </script>
   </head>
   <body>
     <div id="app"></div>

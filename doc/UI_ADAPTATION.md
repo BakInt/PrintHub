@@ -38,6 +38,8 @@
 - [ ] 长文本（文件名、订单号等）用 `overflow-wrap: anywhere` 处理，不撑破容器
 - [ ] 触控目标（按钮、可点区域）手机端最小高度 ≥ 44px
 - [ ] 固定定位元素处理了 `env(safe-area-inset-*)`（刘海屏/底部手势条）
+- [ ] 同一页面手机端**只有一条**底部固定栏（前台 `.mobile-tabbar` 与后台 `.admin-tabbar` 互斥，见第 2.1 节）
+- [ ] 新增样式**没有写死颜色**，全部走 `var(--cp-*)`；在亮色与深色下都检查过对比度（见第 5.5 节）
 
 ---
 
@@ -59,6 +61,18 @@
 2. 若指向已有页面的不同视图，用 query 参数区分（见第 4 节），不要新建路由。
 3. `.mobile-tabbar` 的 `grid-template-columns` 从 `repeat(3, 1fr)` 相应改为对应列数。
 4. 更新对应的 `.active` 高亮判断。
+
+### 2.1 后台（`/admin`）的独立底部 Tab 栏
+
+后台是单页多 tab（`AdminView.vue`，共 8 个 tab：概览/订单/用户/配置/支付/兑换码/备份/打印机），手机端原先把 8 个 tab 压成顶部横向滚动条，窄屏看不全，因此改为**后台自己的底部 Tab 栏**：
+
+- 结构：`<nav class="admin-tabbar">`，`grid-template-columns: repeat(5, 1fr)`。前 4 格是常用 tab（`.admin-tab-item`，图标 + 文字），第 5 格是「更多」按钮；其余 4 个 tab 收进「更多」面板（`.admin-more-mask` 遮罩 + `.admin-more-sheet` 抽屉，内含 `.admin-more-item` 与返回前台的 `.admin-more-back` → `/`）。
+- **桌面端零变化**：`.admin-tabbar` / `.admin-more-mask` 的基础规则是 `display: none`，仅 `@media (max-width: 767px)` 内显示；桌面端仍由左侧 `.admin-menu` 展示全部 8 个 tab，手机端 767px 内 `.admin-menu { display: none }`。
+- **切换行为不变**：两端共用同一个 `tab` ref 与 `loadTab()`（`watch(tab, loadTab)`）。底部栏点击调用 `selectTab(key)`，只做 `tab.value = key; moreOpen.value = false`，**不涉及路由跳转**，与点桌面 `.admin-menu` 按钮完全等价。
+- **一条页面只允许一条底部栏**：`App.vue` 给外壳绑定 `:class="{ 'app-shell-admin': isAdminRoute }"`（`isAdminRoute = route.path.startsWith('/admin')`），`styles.css` 在 767px 内用 `.app-shell-admin .mobile-tabbar { display: none }` 隐藏前台的「首页/订单/我的」底部栏。新增「自带底部栏」的页面时照此互斥。
+- **安全区**：`height: calc(60px + env(safe-area-inset-bottom))` + `padding-bottom: env(safe-area-inset-bottom)`，与前台 Tab 栏同高，因此 `main` 既有的底部 `padding` 预留无需改动。
+- **层级约定**：底部 Tab 栏 `z-index: 40`，固定底部操作栏 `30`（`.mobile-submit-bar`），「更多」遮罩 `39`（**低于** Tab 栏，遮罩不挡 Tab 栏本身），二级抽屉（`.redemption-drawer-overlay`）`110`。
+- 手机端顶栏导航文字入口被隐藏（第 6 节），所以后台页返回前台首页的入口放在「更多」面板底部（`.admin-more-back`）。
 
 ---
 
@@ -175,6 +189,97 @@
 
 ---
 
+## 5.5 亮色 / 深色主题（PC 与移动端两套独立配色）
+
+系统支持亮色与深色两种主题，**PC 电脑端与移动手机端各有独立的亮/暗 palette，不共用一套 CSS 控制两端**。这是硬要求，新增功能必须按同一套机制接入。
+
+### 文件与加载顺序
+
+| 文件 | 职责 |
+| --- | --- |
+| `frontend/src/assets/theme.css` | 只放主题变量（4 套 palette），不放组件规则 |
+| `frontend/src/assets/styles.css` | 组件规则，颜色**一律**写成 `var(--cp-*)`，不出现写死 hex/rgba |
+| `frontend/src/stores/theme.js` | Pinia store：读写 localStorage、跟随系统、监听视口宽度 |
+| `frontend/index.html` | `<head>` 内联脚本，样式生效前写入 `data-theme`，防止首屏闪白/闪黑 |
+
+`frontend/src/main.js` 必须先 `import './assets/theme.css'`，再 `import './assets/styles.css'`（变量在前，否则首帧无值）。
+
+### 四套 palette（`theme.css` 的四个块）
+
+```css
+:root { ... }                                            /* PC 电脑端 · 亮色 */
+:root[data-theme='dark'] { ... }                         /* PC 电脑端 · 深色 */
+@media (max-width: 767px) { :root { ... } }              /* 移动手机端 · 亮色 */
+@media (max-width: 767px) { :root[data-theme='dark'] { ... } } /* 移动手机端 · 深色 */
+```
+
+设备判定用**视口宽度**（与第 1 节断点一致，手机主断点 767px），判定结果与 `stores/theme.js` 的 `MOBILE_QUERY = '(max-width: 767px)'` 必须保持同一个值。手机端 palette 用的是手机端蓝紫风配色（主色 `#4f46e5` 系），PC 端沿用桌面蓝色体系（`#2563eb` 系），两端互不影响。
+
+**四个块必须各自完整**：每个 palette 都要把全部 67 个变量写全（当前实测：PC 亮 67 / PC 深 67 / 移动亮 67 / 移动深 67，定义集合完全一致）。**不要依赖「移动端没写的从 `:root` 继承」**——那等于让手机端跟着 PC 端变，违反「两套独立配色」。新增变量时四个块一起加，缺一个就会在「该设备 + 该主题」组合下取到空值（表现为控件透明、文字看不见）。可用 `python scripts/theme_audit.py` 一键核对：它会列出四个 palette 的定义差集、使用了但没定义的变量、以及漏写 `var()` 的裸变量。
+
+### 变量命名（`--cp-` 前缀）
+
+- 品牌：`--cp-brand` `--cp-brand-strong` `--cp-brand-deep` `--cp-brand-text` `--cp-brand-border` `--cp-brand-soft` `--cp-brand-softer` `--cp-brand-emphasis` `--cp-brand-bright` `--cp-brand-mid` `--cp-brand-hi` `--cp-accent-deep`
+- 中性/表面：`--cp-app-bg` `--cp-surface` `--cp-surface-glass` `--cp-soft` `--cp-softer`
+- 边框：`--cp-border` `--cp-border-soft` `--cp-border-mid` `--cp-border-input`
+- 文字（对比度由强到弱）：`--cp-ink-title` `--cp-ink-strong` `--cp-ink-body` `--cp-ink-sub` `--cp-ink-muted`
+- 阴影/遮罩：`--cp-shadow-1` `--cp-shadow-3` `--cp-shadow-4` `--cp-shadow-5` `--cp-shadow-6` `--cp-shadow-brand` `--cp-shadow-brand-lg` `--cp-shadow-button` `--cp-shadow-tabbar` `--cp-swatch-inset` `--cp-overlay`
+- 反白/半透明白（只用于深色渐变主色块上的文字与图标）：`--cp-white-soft` `--cp-white-dim`
+- 状态：`--cp-success*` `--cp-warn` `--cp-warn-soft` `--cp-danger*`（含 `-soft`/`-border`/`-chip` 等变体）
+- 渐变/色卡：`--cp-gradient-intro` `--cp-gradient-soft` `--cp-gradient-drop` `--cp-gradient-drop-2` `--cp-chip-accent` `--cp-swatch-red|amber|green|cyan|purple`
+- 媒体：`--cp-img-filter`（亮色 `none`，深色 `brightness(0.92) contrast(1.04)`）、`--cp-preview-bg`（iframe/PDF 预览底色）
+
+### 写新样式时的硬规则
+
+1. **禁止写死颜色**。新增规则里出现 `#rrggbb`、`rgb()`、`rgba()` 即为不合格；一切颜色（含阴影、渐变端点、placeholder、边框、hover 底色）都走 `var(--cp-*)`。
+2. **不要为了深色去写 `.xxx { color: #fff }`**。同一份规则在亮/暗下都由变量决定；只有确实需要「结构变化」的才写 `:root[data-theme='dark'] .xxx`。
+3. **深色下阴影要重做，不要照搬亮色阴影**：亮色阴影是「深色低透明度投影」，深色下改成更暗更实的投影（已由 `--cp-shadow-*` 承载），照搬会让控件发灰、发脏。
+4. **hint/辅助文字不许用低到看不清的透明度**。深色下辅助文字统一取 `--cp-ink-sub`，不要再叠加 `opacity: .5` 之类的写法；两个主题都要保证正文与背景有足够对比。
+5. **图片/图标不改文件**，统一靠 CSS 滤镜：`img { filter: var(--cp-img-filter) }` 已在深色专项段落统一处理（`html[data-theme='dark'] img`）。验证码这类「浅底深字」的特殊图另写反向滤镜（`.captcha-button img { filter: invert(1) hue-rotate(180deg) }`）。lucide 图标用 `currentColor`，跟随文字色即可，不要额外加滤镜。
+6. **iframe/PDF 预览**必须给底色 `background: var(--cp-preview-bg)`，否则深色下会出现刺眼白块。
+7. **表单/滚动条**：`input`/`select`/`textarea` 的底色、文字、`::placeholder`、`select option`、`accent-color`、`scrollbar-color`、`::-webkit-scrollbar*` 都已在深色专项段落里统一处理；新增自定义输入控件（如 `.key-input`）要自己补一条。
+8. **过渡动画只在切换时生效**：`html.theme-ready` 才开启 0.25s 的颜色过渡（类名由 store 在首帧后加），`prefers-reduced-motion` 下关闭。首屏不加过渡，避免进场时整体闪一下。
+
+### 主题状态（`stores/theme.js`）
+
+- 优先级：**localStorage（`cloud-print-theme`，值 `light`/`dark`）> 系统偏好（`prefers-color-scheme`）**。未手动选择过时跟随系统并实时监听系统变化；用户点过切换后写 localStorage，不再跟随系统。
+- 切换入口在 `App.vue` 顶部导航（`.theme-toggle`，桌面为文字胶囊，手机端 767px 内为 36×36 圆形图标按钮）。切换立即全局生效，无需刷新。
+- 新增需要「按设备/按主题」分支的逻辑时，用 store 暴露的 `theme`/`isDark`/`isMobile`，不要自己再写一份 `matchMedia`。
+
+---
+
+## 5.6 横向可滑动的 Tab 条（窄屏放不下时）
+
+一排 Tab / 分段按钮在窄屏放不下时，**不要**把它挪位置或改成下拉，而是保持原位置、只加横向滑动能力。参考实现：后台概览「每日数据统计」卡片的三个维度 Tab `.daily-stats-tabs`（订单趋势 / 收入趋势 / 打印失败分布），桌面端仍是 `display: flex; flex-wrap: wrap` 换行，手机端只加滑动：
+
+```css
+@media (max-width: 767px) {
+  .daily-stats-tabs {
+    display: grid; grid-auto-flow: column; grid-auto-columns: max-content; gap: 8px;
+    padding: 0 2px 2px;
+    overflow-x: auto; overflow-y: hidden;      /* 只横向滚，不产生纵向滚动条 */
+    scrollbar-width: none;                     /* Firefox 隐藏滚动条 */
+    -webkit-overflow-scrolling: touch;         /* iOS 触摸惯性 / 回弹 */
+    overscroll-behavior-x: contain;            /* 滑到头不带动页面滚动、不触发浏览器返回手势 */
+    scroll-snap-type: x proximity;             /* 松手停在按钮边缘 */
+    -webkit-mask-image: linear-gradient(to right, transparent 0, black 8px, black calc(100% - 14px), transparent 100%);
+            mask-image: linear-gradient(to right, transparent 0, black 8px, black calc(100% - 14px), transparent 100%);
+  }
+  .daily-stats-tabs::-webkit-scrollbar { display: none; }
+  .daily-stats-tab { white-space: nowrap; scroll-snap-align: start; }
+}
+```
+
+要点：
+
+- **只加在 767px 内**，桌面端基础样式保持 `flex-wrap: wrap` 换行，电脑版零变化。
+- `overscroll-behavior-x: contain` 是「横向滑动不与页面垂直滚动 / 返回手势冲突」的关键，**不要**用 `overscroll-behavior: none`（会连带禁掉纵向）。
+- 两侧渐变遮罩提示「还能滑动」，用 `transparent` / `black` 关键字即可；**不要**写 `rgba()`/hex，`scripts/theme_check.py` 会把 `styles.css` 里的写死颜色判为不合格。
+- 用 `scroll-snap-type: x proximity` 而不是 `mandatory`：`mandatory` 在窄屏下会强制吸附，滚动不足半个按钮时松手回弹，手感发"粘"。
+- 若同一屏还有固定底部栏（第 5 节），横向滑动条不需要额外留位；内容区仍由 `main` 的底部 padding 兜底。
+
+---
+
 ## 6. 常见坑
 
 - **不要**为了手机端把桌面基础样式里的颜色/圆角直接改掉——会污染电脑版。改动只进 media query。
@@ -190,18 +295,23 @@
 1. 本机无 node/npm，**不要**假设能本地 `npm run build`；正在跑的服务端口可能是旧 Docker 产物。
 2. 改完前端后需**重建 Docker 前端镜像**，UI 实测由用户本人在手机真机/浏览器移动模拟器完成。
 3. 代理侧的验证限于：CSS 语法/括号平衡、类名与结构一致性、断点覆盖是否遗漏、桌面基础样式是否被误改。
+4. 主题相关改动另需静态核查：`styles.css` 里是否残留写死 `#hex`/`rgba()`、`var(--cp-*)` 是否都在 `theme.css` 里有定义、**四个 palette 块的定义集合是否完全一致**（缺一个就会在对应场景下取到空值）。`scripts/` 下有 `theme_check.py`（变量定义/使用差集、残留写死颜色、括号平衡）、`theme_audit.py`（四个 palette 的定义差集、未定义引用、漏写 `var()` 的裸变量）与 `theme_class_audit.py`（模板 class 是否有对应规则）可复跑。
 
 ---
 
 ## 8. 相关文件索引
 
-- 底部 Tab 栏与全局壳、顶部导航：`frontend/src/App.vue`
+- 底部 Tab 栏与全局壳、顶部导航、主题切换按钮：`frontend/src/App.vue`
 - 全部样式（含所有断点与手机端规则）：`frontend/src/assets/styles.css`
+- 主题变量（PC/移动端 × 亮/暗 四套 palette）：`frontend/src/assets/theme.css`
+- 主题状态（localStorage / 跟随系统 / 视口判定）：`frontend/src/stores/theme.js`
+- 首屏防闪烁内联脚本（写入 `data-theme`）：`frontend/index.html`
 - 首页（上传/打印设置/固定提交栏）：`frontend/src/views/HomeView.vue`
 - 个人中心（Tab 拆分、联系人折叠、订单分页示例）：`frontend/src/views/DashboardView.vue`
 - 订单进度 / 收银台：`frontend/src/views/PaymentView.vue`
 - 登录注册：`frontend/src/views/AuthView.vue`
-- 后台（单页多 tab）：`frontend/src/views/AdminView.vue`
+- 后台（单页多 tab，含手机端底部 Tab 栏与「更多」面板）：`frontend/src/views/AdminView.vue`
+- 后台概览「每日数据统计」卡片（内联 SVG 图表、维度 Tab 横向滑动）：`frontend/src/components/DailyStatsCard.vue`
 - 路由守卫（`requiresAdmin`）：`frontend/src/router/index.js`
 
 ---

@@ -38,6 +38,32 @@ def limits(db: sqlite3.Connection = Depends(get_db)):
     }
 
 
+@router.get("/print-options")
+def print_options(db: sqlite3.Connection = Depends(get_db)):
+    """【新增功能】打印能力选项：当前默认打印机是否支持「彩色打印」「自动双面打印」。
+
+    首页打印操作页用它决定是否展示这两个选项——完全由后台「打印机管理」里为打印机配置的
+    `is_support_color` / `is_support_auto_duplex` 驱动，前端不做任何硬编码判断。
+
+    默认打印机未配置、或数据库里查不到该打印机的配置记录时，两项都返回 False
+    （前端隐藏对应选项，等价于原有的打印行为，不影响未配置过的老部署）。
+    """
+    row = db.execute("SELECT value FROM settings WHERE key = 'default_printer'").fetchone()
+    printer_name = (row["value"] if row else "") or ""
+    printer = None
+    if printer_name:
+        printer = db.execute(
+            "SELECT name, is_support_color, is_support_auto_duplex FROM printers WHERE name = ?",
+            (printer_name,),
+        ).fetchone()
+    return {
+        "printer_name": printer_name,
+        "printer_configured": printer is not None,
+        "is_support_color": bool(printer["is_support_color"]) if printer else False,
+        "is_support_auto_duplex": bool(printer["is_support_auto_duplex"]) if printer else False,
+    }
+
+
 @router.post("/price")
 def price(payload: dict, db: sqlite3.Connection = Depends(get_db)):
     copies = int(payload.get("copies", 1))

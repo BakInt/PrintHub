@@ -483,6 +483,10 @@ def _printer_object_from_metadata(meta: dict[str, object], default_name: str = "
         "is_cups_default": bool(default_name) and name == default_name,
         "is_enabled": is_enabled,
         "accepting_jobs": accepting_jobs,
+        # 【新增功能】打印机属性（后台配置）：是否支持彩色打印 / 是否支持自动双面打印。
+        # 老库默认彩色=否、自动双面=是，保证升级后原有打印流程不变。
+        "is_support_color": _safe_bool(meta.get("is_support_color"), False),
+        "is_support_auto_duplex": _safe_bool(meta.get("is_support_auto_duplex"), True),
         "installed": True,
         "queued_jobs": 0,
         "marker_names": [],
@@ -536,25 +540,68 @@ def _save_metadata(
     is_default: bool = False,
     is_enabled: bool = True,
     accepting_jobs: bool = True,
+    is_support_color: bool | None = None,
+    is_support_auto_duplex: bool | None = None,
 ) -> None:
+    """写入打印机元数据。
+
+    【新增功能】is_support_color / is_support_auto_duplex 为「是否支持彩色打印 / 自动双面打印」：
+      - None：不修改（UPDATE 走 COALESCE 保留原值；INSERT 用默认值 彩色=否、自动双面=是），
+        这样其它调用点（删除兜底、驱动同步等）无需关心这两个新字段也不会把它们清零。
+      - True/False：写入 1/0。
+    """
     now = datetime.utcnow().isoformat()
     existing = db.execute("SELECT id FROM printers WHERE name = ?", (name,)).fetchone()
+    color_value = 0 if is_support_color is None else (1 if is_support_color else 0)
+    duplex_value = 1 if is_support_auto_duplex is None else (1 if is_support_auto_duplex else 0)
     if existing:
         db.execute(
             """
             UPDATE printers
-            SET uri = ?, driver = ?, location = ?, description = ?, is_default = ?, is_enabled = ?, accepting_jobs = ?, hidden = 0, updated_at = ?
+            SET uri = ?, driver = ?, location = ?, description = ?, is_default = ?, is_enabled = ?, accepting_jobs = ?, hidden = 0,
+                is_support_color = COALESCE(?, is_support_color),
+                is_support_auto_duplex = COALESCE(?, is_support_auto_duplex),
+                updated_at = ?
             WHERE name = ?
             """,
-            (uri, driver, location, description, 1 if is_default else 0, 1 if is_enabled else 0, 1 if accepting_jobs else 0, now, name),
+            (
+                uri,
+                driver,
+                location,
+                description,
+                1 if is_default else 0,
+                1 if is_enabled else 0,
+                1 if accepting_jobs else 0,
+                None if is_support_color is None else color_value,
+                None if is_support_auto_duplex is None else duplex_value,
+                now,
+                name,
+            ),
         )
     else:
         db.execute(
             """
-            INSERT INTO printers (id, name, uri, driver, location, description, is_default, is_enabled, accepting_jobs, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO printers (
+                id, name, uri, driver, location, description, is_default, is_enabled, accepting_jobs,
+                is_support_color, is_support_auto_duplex, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (str(uuid4()), name, uri, driver, location, description, 1 if is_default else 0, 1 if is_enabled else 0, 1 if accepting_jobs else 0, now, now),
+            (
+                str(uuid4()),
+                name,
+                uri,
+                driver,
+                location,
+                description,
+                1 if is_default else 0,
+                1 if is_enabled else 0,
+                1 if accepting_jobs else 0,
+                color_value,
+                duplex_value,
+                now,
+                now,
+            ),
         )
 
 
@@ -569,8 +616,11 @@ def _save_local_metadata(
     is_enabled: bool = True,
     accepting_jobs: bool = True,
     hidden: bool = False,
+    is_support_color: bool | None = None,
+    is_support_auto_duplex: bool | None = None,
 ) -> None:
-    _save_metadata(db, name, uri, driver, location, description or name, is_default, is_enabled, accepting_jobs)
+    # 【新增功能】保留本地打印机配置时一并保存彩色/自动双面能力（None=保持原值）。
+    _save_metadata(db, name, uri, driver, location, description or name, is_default, is_enabled, accepting_jobs, is_support_color, is_support_auto_duplex)
     db.execute("UPDATE printers SET hidden = ? WHERE name = ?", (1 if hidden else 0, name))
 
 
@@ -616,6 +666,9 @@ def _printer_object(name: str, attrs: dict[str, object], default_name: str, meta
         "is_cups_default": bool(default_name) and name == default_name,
         "is_enabled": state != "stopped",
         "accepting_jobs": accepting_jobs,
+        # 【新增功能】打印机属性（后台配置）：是否支持彩色/自动双面，随打印机列表与详情一起返回
+        "is_support_color": _safe_bool(meta.get("is_support_color"), False),
+        "is_support_auto_duplex": _safe_bool(meta.get("is_support_auto_duplex"), True),
         "installed": True,
         "queued_jobs": _safe_int(attrs.get("queued-job-count"), 0),
         "marker_names": _attr_values(attrs.get("marker-names")),
@@ -1505,6 +1558,12 @@ def update_printer(db, name: str, payload) -> dict[str, object]:
     was_default = bool(current.get("is_default"))
     is_enabled = current.get("is_enabled", True) if getattr(payload, "is_enabled", None) is None else bool(payload.is_enabled)
     accepting_jobs = current.get("accepting_jobs", True) if getattr(payload, "accepting_jobs", None) is None else bool(payload.accepting_jobs)
+    # 【新增功能】打印机属性：后端未收到该字段（None）时保留数据库原值，便于旧前端/其它调用点兼容。
+    is_support_color = current.get("is_support_color", False) if getattr(payload, "is_support_color", None) is None else bool(payload.is_support_color)
+    is_support_auto_duplex = (
+        current.get("is_support_auto_duplex", True) if getattr(payload, "is_support_auto_duplex", None) is None else bool(payload.is_support_auto_duplex)
+    )
+    capabilities = {"is_support_color": is_support_color, "is_support_auto_duplex": is_support_auto_duplex}
 
     def update(conn):
         _ensure_queue_exists(conn, name)
@@ -1523,7 +1582,7 @@ def update_printer(db, name: str, payload) -> dict[str, object]:
             except Exception as exc:
                 delete_error = _cups_error_message(exc, "旧队列删除失败")
             attrs = _attributes(conn, new_name)
-            printer = _printer_object(new_name, attrs, default_name, {}, True)
+            printer = _printer_object(new_name, attrs, default_name, capabilities, True)
             if is_default:
                 printer["is_default"] = True
             return printer, delete_error, default_diagnostics
@@ -1534,7 +1593,7 @@ def update_printer(db, name: str, payload) -> dict[str, object]:
             if _try_set_cups_default(conn, name, default_diagnostics):
                 default_name = name
         attrs = _attributes(conn, name)
-        printer = _printer_object(name, attrs, default_name, {}, True)
+        printer = _printer_object(name, attrs, default_name, capabilities, True)
         if is_default:
             printer["is_default"] = True
         return printer, "", default_diagnostics
@@ -1545,7 +1604,7 @@ def update_printer(db, name: str, payload) -> dict[str, object]:
             if new_name != name:
                 _save_local_metadata(db, name, current.get("uri", ""), current.get("driver", DRIVERLESS_ID), current.get("location", ""), current.get("description", name), was_default, bool(current.get("is_enabled", True)), bool(current.get("accepting_jobs", True)), hidden=True)
                 _clear_default_setting(db, name)
-            _save_local_metadata(db, new_name, uri, driver, location, description, is_default, is_enabled, accepting_jobs)
+            _save_local_metadata(db, new_name, uri, driver, location, description, is_default, is_enabled, accepting_jobs, is_support_color=is_support_color, is_support_auto_duplex=is_support_auto_duplex)
             if is_default:
                 _sync_default_setting(db, new_name)
             elif was_default:
@@ -1568,7 +1627,7 @@ def update_printer(db, name: str, payload) -> dict[str, object]:
     if new_name != name:
         db.execute("DELETE FROM printers WHERE name = ?", (name,))
         _clear_default_setting(db, name)
-    _save_metadata(db, new_name, uri, driver, location, description, is_default, is_enabled, accepting_jobs)
+    _save_metadata(db, new_name, uri, driver, location, description, is_default, is_enabled, accepting_jobs, is_support_color, is_support_auto_duplex)
     if is_default:
         _sync_default_setting(db, new_name)
     elif was_default:

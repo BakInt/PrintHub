@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS orders (
     total_amount REAL NOT NULL,
     status TEXT DEFAULT 'pending',
     is_double_sided INTEGER DEFAULT 0,
+    -- 【新增功能】彩色打印：用户下单时是否选择彩色（NULL=旧数据/旧前端未指定，1=彩色，0=黑白）
+    use_color INTEGER,
     copies INTEGER DEFAULT 1,
     payment_method TEXT DEFAULT 'wxpay',
     printer_name TEXT,
@@ -114,6 +116,9 @@ CREATE TABLE IF NOT EXISTS printers (
     is_default INTEGER DEFAULT 0,
     is_enabled INTEGER DEFAULT 1,
     accepting_jobs INTEGER DEFAULT 1,
+    -- 【新增功能】打印机属性：是否支持彩色打印 / 是否支持自动双面打印（后台配置，驱动前端是否展示对应选项）
+    is_support_color INTEGER DEFAULT 0,
+    is_support_auto_duplex INTEGER DEFAULT 1,
     last_status TEXT,
     last_checked_at TEXT,
     last_test_at TEXT,
@@ -144,6 +149,41 @@ CREATE TABLE IF NOT EXISTS login_failures (
     locked_until REAL DEFAULT 0,
     updated_at REAL NOT NULL,
     UNIQUE(ip_address, username)
+);
+
+-- 【新增功能】兑换码：后台生成，用户在个人中心「兑换码充值」输入兑换额度。
+-- 一个兑换码最多可被兑换 usable_count 次（默认 1），每次成功兑换给对应用户加 balance。
+-- per_user_max_times=0（默认）表示关闭「每个用户最大兑换次数」限制，完全按 usable_count 总次数逻辑；
+-- per_user_max_times=N>0 时开启双重校验：既受 usable_count 总次数约束，同一 user_id 又最多兑换 N 次
+-- （该用户已兑换次数统计 redemption_logs）。
+-- 历史列 per_user_once（每个用户仅可使用一次）已被 per_user_max_times 取代，不再读写；
+-- 旧库由 migrate_redemption_per_user_limit() 做一次等价换算 per_user_once=1 → per_user_max_times=1。
+-- expires_at 是过期判断的唯一权威字段，两种互斥的有效期方式都只体现在它上面：
+-- 「按天数」由 valid_days 算出（valid_days=0 表示永久有效、expires_at 为 NULL）；
+-- 「指定到期日期」由管理员用日期控件直接指定，归一化为当天 23:59:59 后写入并把 valid_days 记为 0。
+-- 因此 (valid_days, expires_at) 组合可唯一定位方式，无需为到期日期新增列。
+CREATE TABLE IF NOT EXISTS redemption_codes (
+    id TEXT PRIMARY KEY,
+    code TEXT UNIQUE NOT NULL,
+    amount REAL NOT NULL,
+    usable_count INTEGER DEFAULT 1,
+    used_count INTEGER DEFAULT 0,
+    per_user_max_times INTEGER DEFAULT 0,
+    valid_days INTEGER DEFAULT 0,
+    expires_at TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(code)
+);
+
+-- 兑换日志：每次成功兑换记录一条（兑换用户 id + 时间 + 到账金额）。
+CREATE TABLE IF NOT EXISTS redemption_logs (
+    id TEXT PRIMARY KEY,
+    code_id TEXT NOT NULL,
+    user_id TEXT,
+    amount REAL NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (code_id) REFERENCES redemption_codes(id),
+    FOREIGN KEY (user_id) REFERENCES users(id)
 );
 """
 
@@ -209,6 +249,9 @@ SCHEMA_MIGRATIONS = {
         "discount_amount": "REAL DEFAULT 0",
         "pricing_detail": "TEXT",
         "balance_applied_at": "TEXT",
+        # 【新增功能】旧库补列：彩色打印标记。故意不给 DEFAULT：老订单补列后为 NULL
+        # （NULL = 未指定，打印时完全沿用原有逻辑，历史订单/旧前端行为不变）。
+        "use_color": "INTEGER",
     },
     "payments": {
         "status": "TEXT DEFAULT 'pending'",
@@ -217,6 +260,13 @@ SCHEMA_MIGRATIONS = {
     "order_items": {
         "is_double_sided": "INTEGER DEFAULT 0",
     },
+    "redemption_codes": {
+        # 【新增功能】旧库补列：每个用户最大兑换次数。0 = 关闭该限制（保持原有
+        # 「按总可用次数」逻辑不变）；N > 0 = 同一用户最多兑换 N 次，且仍受总次数约束。
+        # 取代历史上的 per_user_once（每个用户仅可使用一次），旧值由
+        # migrate_redemption_per_user_limit() 换算过来。
+        "per_user_max_times": "INTEGER DEFAULT 0",
+    },
     "printers": {
         "accepting_jobs": "INTEGER DEFAULT 1",
         "last_test_at": "TEXT",
@@ -224,6 +274,11 @@ SCHEMA_MIGRATIONS = {
         "last_test_note": "TEXT",
         "last_error": "TEXT",
         "hidden": "INTEGER DEFAULT 0",
+        # 【新增功能】旧库补列：打印机是否支持彩色 / 自动双面。
+        # 彩色默认 0（旧版没有彩色能力，保持"不展示彩色选项"）；
+        # 自动双面默认 1（旧版所有打印机都可选双面，升级后保持原行为不变）。
+        "is_support_color": "INTEGER DEFAULT 0",
+        "is_support_auto_duplex": "INTEGER DEFAULT 1",
     },
 }
 
@@ -234,6 +289,28 @@ def ensure_columns(connection: sqlite3.Connection) -> None:
         for column, definition in columns.items():
             if column not in existing:
                 connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def migrate_redemption_per_user_limit(connection: sqlite3.Connection) -> None:
+    """一次性数据换算：旧库的 per_user_once=1 等价于 per_user_max_times=1。
+
+    `per_user_once`（每个用户仅可使用一次）已被 `per_user_max_times`（每个用户最大
+    兑换次数，0=不限制）取代，代码不再读写旧列。升级后旧库里勾选过「每个用户仅可
+    使用一次」的兑换码必须继续保持原来的限制，因此这里做一次等价换算。
+    幂等：只处理「per_user_max_times 仍为 0 且 per_user_once=1」的行，重复执行无副作用；
+    新库没有 per_user_once 列，直接跳过（什么都不用换算）。
+    """
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(redemption_codes)").fetchall()}
+    if "per_user_once" not in columns or "per_user_max_times" not in columns:
+        return
+    connection.execute(
+        """
+        UPDATE redemption_codes
+           SET per_user_max_times = 1
+         WHERE per_user_once = 1
+           AND per_user_max_times = 0
+        """
+    )
 
 
 def connect() -> sqlite3.Connection:
@@ -252,6 +329,8 @@ def init_db() -> None:
     with connect() as connection:
         connection.executescript(SCHEMA)
         ensure_columns(connection)
+        # 补列之后再换算旧数据：老库里 per_user_once=1 的兑换码要变成「每用户最多 1 次」。
+        migrate_redemption_per_user_limit(connection)
         defaults = {
             **DEFAULT_SETTINGS,
             "epay_gateway": settings.epay_gateway,

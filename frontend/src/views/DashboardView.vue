@@ -126,12 +126,37 @@
         <section class="voucher-panel">
           <h3>兑换码充值</h3>
           <div class="voucher-row">
-            <input class="input" type="text" placeholder="请输入兑换码" disabled />
-            <button class="secondary-btn" disabled>兑换额度</button>
+            <input
+              v-model.trim="redemptionCode"
+              class="input"
+              type="text"
+              maxlength="64"
+              placeholder="请输入兑换码"
+              @keyup.enter="submitRedemption"
+            />
+            <button class="secondary-btn" :disabled="redeeming" @click="submitRedemption">
+              {{ redeeming ? '兑换中...' : '兑换额度' }}
+            </button>
           </div>
-          <small>兑换码充值暂未开放</small>
+          <small class="voucher-hint">输入兑换码即可兑换相应面额到余额，可直接用于打印扣费</small>
         </section>
       </section>
+
+      <!-- 兑换码结果弹窗：成功 / 失败 -->
+      <div v-if="redeemModal" class="modal-overlay" @click.self="closeRedeemModal">
+        <div class="modal-content redeem-result-modal">
+          <div class="modal-header">
+            <h2>{{ redeemModal.type === 'success' ? '兑换成功' : '兑换失败' }}</h2>
+            <button class="close-btn" @click="closeRedeemModal">×</button>
+          </div>
+          <div class="modal-body">
+            <p :class="['redeem-result-message', redeemModal.type]">{{ redeemModal.message }}</p>
+            <div class="form-actions">
+              <button class="primary-btn" @click="closeRedeemModal">确定</button>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <section class="panel wide-panel orders-panel">
         <div class="section-heading compact">
@@ -180,6 +205,10 @@ const paymentMethod = ref('alipay')
 const feedback = ref('')
 const feedbackType = ref('success')
 const profileForm = ref({ real_name: '', phone: '' })
+// 兑换码充值
+const redemptionCode = ref('')
+const redeeming = ref(false)
+const redeemModal = ref(null) // { type: 'success' | 'error', message }
 const presetAmounts = [25, 50, 100, 200, 500, 1000, 1500, 2000]
 const statusText = { pending: '待支付', paid: '已支付', printing: '已发送打印', print_failed: '打印失败', completed: '已完成' }
 const phonePattern = /^1[3-9]\d{9}$/
@@ -340,6 +369,42 @@ async function submitRecharge() {
   } finally {
     submitting.value = false
   }
+}
+
+async function submitRedemption() {
+  const code = redemptionCode.value.trim()
+  if (!code) {
+    redeemModal.value = { type: 'error', message: '请输入兑换码' }
+    return
+  }
+  redeeming.value = true
+  try {
+    const data = await request('/api/user/redeem', { method: 'POST', body: { code } })
+    redemptionCode.value = ''
+    // 后端返回最新余额，直接同步到用户信息，无需再请求一次。
+    if (data && auth.user && typeof data.balance === 'number') {
+      auth.user = { ...auth.user, balance: data.balance }
+    }
+    redeemModal.value = {
+      type: 'success',
+      message: `兑换成功，¥${formatMoney(data.amount)} 已加入余额，当前余额 ¥${formatMoney(data.balance)}`
+    }
+  } catch (error) {
+    // 业务错误（兑换码不存在 / 已过期 / 可用次数已用完等）直接用后端返回的中文提示；
+    // 只有拿不到可读信息、或确属未知服务器故障时，才统一提示服务器异常。
+    const message = String(error?.message || '').trim()
+    const unknownServerError = !message || /internal server error|服务器内部错误|^请求失败$/i.test(message)
+    redeemModal.value = {
+      type: 'error',
+      message: unknownServerError ? '兑换失败，服务器异常，请稍后重试' : message
+    }
+  } finally {
+    redeeming.value = false
+  }
+}
+
+function closeRedeemModal() {
+  redeemModal.value = null
 }
 
 async function loadRechargeReturnStatus() {

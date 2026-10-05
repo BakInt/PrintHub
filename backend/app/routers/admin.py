@@ -10,12 +10,15 @@ from fastapi.responses import FileResponse
 
 from ..config import get_settings as get_app_settings
 from ..database import get_db
-from ..models.schemas import AdminUserCreate, AdminUserUpdate, BackupCreateRequest, BackupPolicyUpdate, BalanceSet, BalanceUpdate, FileCacheCleanupRequest, PaymentSettingsUpdate, PaymentTestRequest, PrinterEnabledUpdate, PrinterTestPageRequest, PrinterTestResult, PrinterUpdate, PrinterUriProbe, SettingsUpdate
+from ..models.schemas import AdminRedemptionBatchCreate, AdminRedemptionCreate, AdminUserCreate, AdminUserUpdate, BackupCreateRequest, BackupPolicyUpdate, BalanceSet, BalanceUpdate, FileCacheCleanupRequest, PaymentSettingsUpdate, PaymentTestRequest, PrinterEnabledUpdate, PrinterTestPageRequest, PrinterTestResult, PrinterUpdate, PrinterUriProbe, SettingsUpdate
 from ..services.backup import backup_file_path, backup_policy, create_backup, delete_backup, inspect_initial_restore, inspect_uploaded_backup, is_initial_restore_available, list_backups, restore_initial_backup, restore_uploaded_backup, update_backup_policy
 from ..services.epay import build_success_notify_payload, complete_epay_payment, create_epay_request, get_payment_settings, validate_payment_settings
 from ..services.cups_printer import get_printer as get_cups_printer, clear_default_printer, import_ppd_driver, list_printer_drivers, list_printer_jobs, list_printers, normalize_printer_uri, printer_system, probe_printer_uri, record_printer_test_result, remove_printer, set_default_printer, set_printer_enabled, test_printer, update_printer
 from ..services.print_monitor import check_printing_orders
 from ..services.queue import queue_overview
+from ..services.redemption import batch_generate_codes, create_code, delete_code, list_code_logs, list_codes
+# 必须用别名引入：下面的路由函数同名会覆盖模块级名字，导致路由调用自己。
+from ..services.stats import daily_stats as build_daily_stats
 from ..utils.security import hash_password
 from .deps import admin_user
 
@@ -65,6 +68,17 @@ def dashboard(db: sqlite3.Connection = Depends(get_db), _admin=Depends(admin_use
     result["printing_count"] = overview["printing_count"]
     result["queue_count"] = overview["total"]
     return {"totals": result}
+
+
+@router.get("/daily-stats")
+def daily_stats(days: int = Query(default=7, ge=1, le=90), db: sqlite3.Connection = Depends(get_db), _admin=Depends(admin_user)):
+    """后台概览「每日数据统计」：按**本地时区**返回最近 N 天的订单数、收入与打印失败数。
+
+    时间范围切换按钮传 `days=7` / `days=30`；聚合与分日口径集中在
+    `backend/app/services/stats.py`（库里时间戳是 UTC 文本，同一张表还混着
+    `YYYY-MM-DD HH:MM:SS` 与 `YYYY-MM-DDTHH:MM:SS.ffffff` 两种格式）。
+    """
+    return build_daily_stats(db, days)
 
 
 @router.get("/print-queue")
@@ -536,6 +550,85 @@ def delete_user(user_id: str, db: sqlite3.Connection = Depends(get_db), admin: s
     db.execute("DELETE FROM auth_sessions WHERE user_id = ?", (user_id,))
     db.execute("DELETE FROM users WHERE id = ?", (user_id,))
     db.commit()
+    return {"success": True}
+
+
+# ============================================================================
+# 兑换码管理（后台 /api/admin/redemptions）
+# 业务逻辑见 services/redemption.py。所有接口均需管理员权限。
+# ============================================================================
+
+# 兑换码状态中文标签与前端 badge 样色（service 里算好 status 字段，这里供对照展示用）。
+REDEMPTION_STATUS_LABELS = {"unused": "未使用", "used": "已使用", "expired": "已过期"}
+
+
+@router.get("/redemptions")
+def redemption_codes(
+    db: sqlite3.Connection = Depends(get_db),
+    _admin=Depends(admin_user),
+    limit: int = Query(20, ge=1, le=50),
+    offset: int = Query(0, ge=0),
+    search: str | None = Query(None, max_length=64),
+):
+    """分页返回兑换码列表（最新在前），支持按兑换码模糊搜索。"""
+    return list_codes(db, limit=limit, offset=offset, search=search)
+
+
+@router.get("/redemptions/{code_id}/logs")
+def redemption_code_logs(code_id: str, db: sqlite3.Connection = Depends(get_db), _admin=Depends(admin_user)):
+    """返回单个兑换码的兑换日志（兑换用户 + 时间 + 到账金额）。"""
+    return {"logs": list_code_logs(db, code_id)}
+
+
+@router.post("/redemptions")
+def create_redemption_code(
+    payload: AdminRedemptionCreate,
+    db: sqlite3.Connection = Depends(get_db),
+    _admin=Depends(admin_user),
+):
+    """手动新增单个兑换码（自定义码 + 面额 + 可用次数 + 有效期 + 每用户最大兑换次数）。
+
+    有效期支持两种互斥方式（见 AdminRedemptionCreate）：expiry_mode="days" 走 valid_days；
+    expiry_mode="date" 时 expire_date（YYYY-MM-DD）由服务层归一化成当天 23:59:59 后写库。
+    这里必须把 payload.expire_date 显式作为关键字参数透传，漏传会让「指定到期日期」静默失效。
+    """
+    result = create_code(
+        db,
+        payload.code,
+        payload.amount,
+        payload.usable_count,
+        payload.valid_days,
+        payload.per_user_max_times,
+        expires_at=payload.expire_date,
+    )
+    return {"success": True, **result}
+
+
+@router.post("/redemptions/batch")
+def batch_create_redemption_codes(
+    payload: AdminRedemptionBatchCreate,
+    db: sqlite3.Connection = Depends(get_db),
+    _admin=Depends(admin_user),
+):
+    """批量生成随机兑换码（数量 + 每张面额 + 可用次数 + 有效期）。
+
+    有效期同样支持「按天数」或「指定到期日期」二选一，透传方式与手动新增一致。
+    """
+    created = batch_generate_codes(
+        db,
+        payload.count,
+        payload.amount,
+        payload.usable_count,
+        payload.valid_days,
+        expires_at=payload.expire_date,
+    )
+    return {"success": True, "codes": created, "count": len(created)}
+
+
+@router.delete("/redemptions/{code_id}")
+def delete_redemption_code(code_id: str, db: sqlite3.Connection = Depends(get_db), _admin=Depends(admin_user)):
+    """删除一个兑换码（连同其兑换日志）。不存在时也视为成功（幂等）。"""
+    delete_code(db, code_id)
     return {"success": True}
 
 

@@ -60,8 +60,9 @@
               <span :class="['badge', file.converted ? 'success' : 'info']">{{ file.converted ? '已转换为 PDF' : '原始 PDF' }}</span>
               <span v-if="file.safe" class="badge info">点击小眼睛预览 PDF</span>
             </div>
+            <!-- 【新增功能】自动双面：打印机未开启「支持自动双面打印」时，这里完全隐藏。 -->
             <label
-              v-if="file.safe"
+              v-if="file.safe && autoDuplexSupported"
               class="file-duplex"
               :class="{ disabled: !fileDuplexAvailable(file) }"
               @click="handleFileDuplexClick($event, file)"
@@ -74,7 +75,7 @@
               />
               <span>自动双面（本份文档正反面）</span>
             </label>
-            <small v-if="file.safe && !fileDuplexAvailable(file)" class="field-hint">单页文档无法双面，仅按单面打印。</small>
+            <small v-if="file.safe && autoDuplexSupported && !fileDuplexAvailable(file)" class="field-hint">单页文档无法双面，仅按单面打印。</small>
           </div>
           <div class="file-actions">
             <button class="icon-btn" title="预览" :disabled="!file.safe" @click="openPreview(file)"><Eye :size="18" /></button>
@@ -82,7 +83,7 @@
           </div>
         </article>
       </div>
-      <p v-if="safeFiles.length" class="duplex-help">
+      <p v-if="safeFiles.length && autoDuplexSupported" class="duplex-help">
         自动双面按每份文档独立设置：勾选后仅把该份多页文档的内容打印在同一张纸的正反两面。单页文档无法双面，也不会把多份文档合并到同一张纸上。
       </p>
     </div>
@@ -111,7 +112,8 @@
         <small v-if="guestContactPhone && !contactPhoneValid" class="field-hint warning">请输入 11 位中国大陆手机号</small>
       </template>
 
-      <div v-if="safeFiles.length" class="duplex-control">
+      <!-- 【新增功能】自动双面选项：仅当后台把当前打印机配置为「支持自动双面打印」时展示，否则完全隐藏。 -->
+      <div v-if="safeFiles.length && autoDuplexSupported" class="duplex-control">
         <div class="section-heading compact duplex-heading">
           <span class="duplex-title">
             自动双面
@@ -141,6 +143,17 @@
           </button>
         </div>
         <small class="field-hint">仅对页数 ≥ 2 页的文档生效；单页文档始终按单面打印。可在左侧文件列表逐份微调。</small>
+      </div>
+
+      <!-- 【新增功能】彩色打印：仅当后台把当前打印机配置为「支持彩色打印」时展示，否则完全隐藏。 -->
+      <div v-if="colorSupported" class="duplex-control color-control">
+        <div class="section-heading compact duplex-heading">
+          <span class="duplex-title">彩色打印</span>
+        </div>
+        <div class="segmented color-methods">
+          <button type="button" :class="{ selected: !useColor }" title="按原有黑白流程处理并打印" @click="useColor = false">黑白</button>
+          <button type="button" :class="{ selected: useColor }" title="保留文件原始色彩直接送给打印机，不做黑白转换" @click="useColor = true">彩色</button>
+        </div>
       </div>
 
       <label class="field-label">份数</label>
@@ -212,19 +225,27 @@ const estimatedAmount = ref(0)
 const estimateDetail = ref({})
 const promotions = ref(null)
 const uploadLimits = ref(null)
+// 【新增功能】printOptions 来自公开接口 /api/print-options（当前打印机的彩色/自动双面能力）；
+// useColor 是用户的彩色选择，只有打印机支持彩色时才会提交给后端。
+const printOptions = ref(null)
+const useColor = ref(false)
 const dragging = ref(false)
 const submitting = ref(false)
 const message = ref('')
 const noticeType = ref('')
 
 const safeFiles = computed(() => files.value.filter((file) => file.safe))
+// 【新增功能】打印机能力完全由后台「打印机管理」的配置驱动，前端不硬编码：
+// 只有 is_support_color/is_support_auto_duplex 为 true 时才展示对应选项。
+const colorSupported = computed(() => printOptions.value?.is_support_color === true)
+const autoDuplexSupported = computed(() => printOptions.value?.is_support_auto_duplex === true)
 function fileDuplexAvailable(file) {
   return (Number(file.page_count) || 0) >= 2
 }
 function fileSettingsPayload() {
   return safeFiles.value.map((file) => ({
     file_id: file.file_id,
-    double_sided: fileDuplexAvailable(file) && !!fileDuplex.value[file.file_id],
+    double_sided: autoDuplexSupported.value && fileDuplexAvailable(file) && !!fileDuplex.value[file.file_id],
   }))
 }
 function setFileDuplex(file, checked) {
@@ -305,13 +326,14 @@ const uploadLimitText = computed(() => {
 onMounted(() => {
   loadPromotions()
   loadLimits()
+  loadPrintOptions()
 })
 
 watch(() => auth.user, (user) => {
   if (!user && paymentMethod.value === 'balance') paymentMethod.value = 'wxpay'
 })
 
-watch([safeFiles, copies, fileDuplex], async () => {
+watch([safeFiles, copies, fileDuplex, printOptions], async () => {
   const fileIds = safeFiles.value.map((file) => file.file_id)
   if (!fileIds.length) {
     estimatedAmount.value = 0
@@ -342,6 +364,19 @@ async function loadLimits() {
   }
 }
 
+// 【新增功能】读取当前（默认）打印机的彩色/自动双面能力，用于条件渲染「彩色打印」「双面打印」。
+async function loadPrintOptions() {
+  try {
+    const data = await request('/api/print-options')
+    printOptions.value = data
+    // 打印机不支持彩色时强制回到黑白，避免请求里带上不支持的能力。
+    if (data?.is_support_color !== true) useColor.value = false
+  } catch {
+    printOptions.value = null
+    useColor.value = false
+  }
+}
+
 function setNotice(text, type = '') {
   message.value = text
   noticeType.value = type
@@ -356,8 +391,8 @@ async function uploadOne(file) {
   form.append('file', file)
   const result = await request('/api/upload', { method: 'POST', body: form })
   files.value.push(result.data)
-  // 检测到 ≥ 2 页的安全文档时默认启用自动双面；单页文档保持单面。
-  if (result.data.safe && (Number(result.data.page_count) || 0) >= 2) {
+  // 检测到 ≥ 2 页的安全文档时默认启用自动双面（仅在打印机支持自动双面时）；单页文档保持单面。
+  if (autoDuplexSupported.value && result.data.safe && (Number(result.data.page_count) || 0) >= 2) {
     fileDuplex.value = { ...fileDuplex.value, [result.data.file_id]: true }
   }
   setNotice(result.data.converted ? '文件已转换为 PDF，点击小眼睛可在浏览器内预览。' : 'PDF 文件已处理完成，点击小眼睛可在浏览器内预览。', 'success')
@@ -402,16 +437,21 @@ function openPreview(file) {
 }
 
 async function submitPrintOrder(method) {
+  const printSettings = {
+    copies: copies.value,
+    file_settings: fileSettingsPayload(),
+    contact_name: contactName.value.trim(),
+    contact_phone: contactPhone.value
+  }
+  // 【新增功能】只在打印机确实支持对应能力时才携带新参数：
+  // use_color 决定后端是否跳过黑白化处理（true=原样送印），use_auto_duplex 表示用户是否选择了自动双面。
+  if (colorSupported.value) printSettings.use_color = useColor.value
+  if (autoDuplexSupported.value) printSettings.use_auto_duplex = duplexSummary.value.enabled > 0
   return request('/api/payment/create', {
     method: 'POST',
     body: {
       file_ids: safeFiles.value.map((file) => file.file_id),
-      print_settings: {
-        copies: copies.value,
-        file_settings: fileSettingsPayload(),
-        contact_name: contactName.value.trim(),
-        contact_phone: contactPhone.value
-      },
+      print_settings: printSettings,
       payment_method: method
     }
   })

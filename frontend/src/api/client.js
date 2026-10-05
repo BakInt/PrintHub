@@ -70,7 +70,8 @@ const FIELD_LABELS = {
   new_name: '新名称',
   template_id: '模板',
   uri: '打印机地址',
-  driver: '驱动'
+  driver: '驱动',
+  code: '兑换码'
 }
 
 function translateFieldLocation(loc) {
@@ -99,7 +100,10 @@ function translateValidationMessage(message) {
     [/(Field required|Input should be provided)/i, () => '此项为必填'],
     [/value is not a valid email address.*/i, () => '邮箱格式不正确'],
     [/ensure this value has at least (\d+) items?/i, (m) => `至少需要 ${m[1]} 项`],
-    [/List should have at least (\d+) items?.*/i, (m) => `至少需要 ${m[1]} 项`]
+    [/List should have at least (\d+) items?.*/i, (m) => `至少需要 ${m[1]} 项`],
+    // 自定义校验器（如兑换码「请输入兑换码」、兑换面额「必须大于 0」）的文案会带
+    // Pydantic 的 "Value error, " 前缀，这里剥掉前缀、只展示中文提示。
+    [/^Value error,\s*(.+)$/is, (m) => m[1]]
   ]
   for (const [pattern, build] of rules) {
     const match = text.match(pattern)
@@ -126,6 +130,11 @@ function normalizeErrorMessage(message) {
     }
     parts.push('建议在软路由 CUPS 管理界面（http://192.168.1.1:631/）中手动测试添加打印机')
     return parts.join('；')
+  }
+  
+  // 后端未捕获异常时 FastAPI 只返回纯文本 "Internal Server Error"，翻译成可读中文的服务器故障提示。
+  if (/^(internal server error|服务器内部错误)/i.test(text.trim())) {
+    return '服务器内部错误，请稍后重试'
   }
   
   return text

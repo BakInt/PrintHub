@@ -1,7 +1,7 @@
 from datetime import datetime
 import re
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 PHONE_PATTERN = re.compile(r"^1[3-9]\d{9}$")
@@ -94,6 +94,13 @@ class PrintSettings(BaseModel):
     printer_name: str | None = None
     contact_name: str | None = Field(default=None, max_length=40)
     contact_phone: str | None = Field(default=None, max_length=11)
+    # 【新增功能】彩色打印开关：True=彩色（后端不得把文件转黑白），False=黑白。
+    # 为 None 表示旧版前端没有携带该字段，后端完全按原有逻辑处理（兼容旧业务）。
+    use_color: bool | None = None
+    # 【新增功能】自动双面打印总开关，与前端「双面打印」选项同源。
+    # 为 None 时沿用原有逻辑（全局 double_sided + 逐份 file_settings）；
+    # 非 None 时作为「未单独设置的文件」的全局默认值（逐份 file_settings 仍然优先）。
+    use_auto_duplex: bool | None = None
 
     def double_sided_map(self) -> dict[str, bool]:
         """把按份设置折算成 {file_id: bool} 映射。
@@ -168,6 +175,145 @@ class RechargeRequest(BaseModel):
         if payment_method == "balance":
             raise ValueError("充值仅支持微信或支付宝")
         return payment_method
+
+
+class RedeemRequest(BaseModel):
+    """用户个人中心「兑换码充值」：提交兑换码兑换额度到余额。"""
+
+    code: str = Field(min_length=1, max_length=64)
+
+    @field_validator("code", mode="before")
+    @classmethod
+    def normalize_code(cls, value):
+        code = str(value or "").strip().upper()
+        if not code:
+            raise ValueError("请输入兑换码")
+        return code
+
+
+class AdminRedemptionCreate(BaseModel):
+    """后台手动新增单个兑换码。
+
+    code 允许为空：留空（或不传）时由后端自动生成随机兑换码，
+    与弹窗提示「自定义兑换码（留空随机生成）」保持一致，因此这里不设 min_length。
+    其余字段（兑换面额、可用次数、有效期）仍保留校验。
+
+    per_user_max_times（弹窗「每个用户最大兑换次数」开关 + 数字输入框）：
+    0 = 关闭该限制，完全沿用原有「按 usable_count 总可用次数」的逻辑；
+    N > 0 = 开启限制，同一个 user_id 最多只能兑换该兑换码 N 次。
+    开启后是双重校验：既要通过 usable_count 的全局总次数校验，又要满足每用户次数上限，
+    任一超限都直接拒绝；某用户已兑换次数通过兑换记录表 redemption_logs 统计。
+
+    【新增功能】有效期两种互斥方式（弹窗里二选一，不允许同时生效）：
+    - expiry_mode="days"（默认）：按 valid_days 天数计算，0 表示永久有效；
+    - expiry_mode="date"：由 expire_date（原生日期控件提交的 YYYY-MM-DD）直接指定到期日期，
+      这里只校验日期格式与真实性，具体到期时刻（当天 23:59:59）由
+      app.services.redemption.normalize_expire_date() 归一化，并把 valid_days 强制归零。
+    这样老前端（只传 valid_days、不传新字段）的行为完全不变。
+    """
+
+    code: str = Field(default="", max_length=64)
+    amount: float = Field(gt=0, le=100000)
+    usable_count: int = Field(default=1, ge=1, le=100000)
+    valid_days: int = Field(default=0, ge=0, le=10000)
+    per_user_max_times: int = Field(default=0, ge=0, le=100000)
+    expiry_mode: str = Field(default="days")
+    expire_date: str | None = Field(default=None, max_length=32)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_redemption_payload(cls, data):
+        """兼容旧前端 + 归一两套有效期配置。
+
+        1. 老的复选框 per_user_once=True 等价于「每用户最多 1 次」：旧版弹窗只提交布尔值，
+           若直接丢弃会让限制静默失效，这里折算成 per_user_max_times=1。
+        2. 有效期：expiry_mode 非 "date" 时一律按「按天数」处理并清空 expire_date，
+           避免两种方式同时生效产生歧义；"date" 模式下 expire_date 必填且必须是
+           真实存在的 YYYY-MM-DD，同时把 valid_days 归零。
+        """
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        if normalized.get("per_user_once") and not normalized.get("per_user_max_times"):
+            normalized["per_user_max_times"] = 1
+
+        mode = str(normalized.get("expiry_mode") or "days").strip().lower()
+        if mode != "date":
+            normalized["expiry_mode"] = "days"
+            normalized["expire_date"] = None
+            return normalized
+
+        raw_date = normalized.get("expire_date")
+        text = str(raw_date).strip() if raw_date is not None else ""
+        try:
+            datetime.strptime(text, "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError("请选择有效的到期日期（格式 YYYY-MM-DD）") from exc
+        normalized["expiry_mode"] = "date"
+        normalized["expire_date"] = text
+        # 指定到期日期模式下天数无意义，强制归零，保证 (valid_days, expires_at) 语义唯一。
+        normalized["valid_days"] = 0
+        return normalized
+
+    @field_validator("amount", mode="before")
+    @classmethod
+    def normalize_amount(cls, value):
+        amount = round(float(value), 2)
+        if amount <= 0:
+            raise ValueError("兑换面额必须大于 0")
+        return amount
+
+    @field_validator("code", mode="before")
+    @classmethod
+    def normalize_code(cls, value):
+        return str(value or "").strip().upper()
+
+
+class AdminRedemptionBatchCreate(BaseModel):
+    """后台批量生成随机兑换码。
+
+    【新增功能】有效期与手动新增一致，支持「按天数」或「指定到期日期」二选一
+    （expiry_mode + expire_date），默认仍是按天数，老前端行为不变。
+    """
+
+    count: int = Field(default=10, ge=1, le=1000)
+    amount: float = Field(gt=0, le=100000)
+    usable_count: int = Field(default=1, ge=1, le=100000)
+    valid_days: int = Field(default=0, ge=0, le=10000)
+    expiry_mode: str = Field(default="days")
+    expire_date: str | None = Field(default=None, max_length=32)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_expiry(cls, data):
+        """与 AdminRedemptionCreate 同一套有效期归一化规则（见上）。"""
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        mode = str(normalized.get("expiry_mode") or "days").strip().lower()
+        if mode != "date":
+            normalized["expiry_mode"] = "days"
+            normalized["expire_date"] = None
+            return normalized
+
+        raw_date = normalized.get("expire_date")
+        text = str(raw_date).strip() if raw_date is not None else ""
+        try:
+            datetime.strptime(text, "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError("请选择有效的到期日期（格式 YYYY-MM-DD）") from exc
+        normalized["expiry_mode"] = "date"
+        normalized["expire_date"] = text
+        normalized["valid_days"] = 0
+        return normalized
+
+    @field_validator("amount", mode="before")
+    @classmethod
+    def normalize_amount(cls, value):
+        amount = round(float(value), 2)
+        if amount <= 0:
+            raise ValueError("兑换面额必须大于 0")
+        return amount
 
 
 class FileCacheCleanupRequest(BaseModel):
@@ -273,6 +419,9 @@ class PrinterCreate(BaseModel):
     is_default: bool = False
     is_enabled: bool = True
     accepting_jobs: bool = True
+    # 【新增功能】打印机属性：是否支持彩色打印 / 是否支持自动双面打印
+    is_support_color: bool = False
+    is_support_auto_duplex: bool = True
 
 
 class PrinterImport(PrinterCreate):
@@ -301,6 +450,10 @@ class PrinterUpdate(BaseModel):
     is_default: bool | None = None
     is_enabled: bool | None = None
     accepting_jobs: bool | None = None
+    # 【新增功能】打印机属性：是否支持彩色打印 / 是否支持自动双面打印。
+    # 为 None 表示本次请求没有携带该字段，后端保持数据库原值不变（兼容旧前端）。
+    is_support_color: bool | None = None
+    is_support_auto_duplex: bool | None = None
 
 
 class PrinterEnabledUpdate(BaseModel):

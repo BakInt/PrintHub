@@ -1,11 +1,12 @@
+import logging
 import os
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from .bootstrap import bootstrap
 from .config import get_settings
@@ -14,6 +15,8 @@ from .middleware import RateLimitMiddleware, maintenance_middleware, security_he
 from .routers import admin, auth, files, orders, public, user
 from .services.backup import start_auto_backup_scheduler
 from .services.print_monitor import start_print_status_monitor
+
+logger = logging.getLogger(__name__)
 
 # 首次部署（config 目录还是空的）时自动生成唯一配置文件 config.json（含随机 app_secret）
 # 并建好数据目录；之后所有配置只改这个文件或后台页面，不再使用 .env。
@@ -44,6 +47,18 @@ if settings.trusted_host_list:
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_host_list)
 app.middleware("http")(security_headers_middleware)
 app.middleware("http")(maintenance_middleware)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """兜底异常处理：任何未捕获异常都记录堆栈并返回标准 JSON 错误。
+
+    FastAPI 默认对未捕获异常只返回纯文本 500 "Internal Server Error"，前端拿不到
+    可读信息（历史 bug：兑换码接口因此只显示 "Internal Server Error"）。这里统一
+    转成 `{"detail": "..."}` 中文提示，真实原因进日志。
+    """
+    logger.exception("未处理异常：%s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"detail": "服务器内部错误，请稍后重试"})
 
 
 def _warn_data_outside_config_root() -> None:

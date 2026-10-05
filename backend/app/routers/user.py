@@ -1,14 +1,18 @@
+import logging
 import sqlite3
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..database import get_db
-from ..models.schemas import RechargeRequest, UserOut, UserProfileUpdate
+from ..models.schemas import RechargeRequest, RedeemRequest, UserOut, UserProfileUpdate
 from ..services.epay import create_payment_url
+from ..services.redemption import redeem as redeem_redemption_code
 from .deps import current_user
 from .auth import row_to_user
 from .orders import generate_order_id
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/user", tags=["user"])
 
@@ -101,4 +105,39 @@ def create_recharge_order(
         "amount": amount,
         "payment_method": payload.payment_method,
         "qr_code_url": payment_url,
+    }
+
+
+@router.post("/redeem")
+def redeem_code(request: RedeemRequest, user: sqlite3.Row = Depends(current_user), db: sqlite3.Connection = Depends(get_db)):
+    """个人中心「兑换码充值」：提交兑换码到账余额。
+
+    - 兑换码不存在 / 已过期 / 可用次数已用满 / 超出余额上限 → 400，detail 为
+      `{code, message}`（前端弹窗展示 message 里的中文提示）。
+    - 数据库或未预期异常 → 500，同样返回标准 JSON 中文提示并记录堆栈，
+      不会把 "Internal Server Error" 这种纯文本 500 抛给前端。
+    - 成功返回到账金额与最新余额。
+
+    注意：服务函数必须用别名 `redeem_redemption_code` 引入。若像以前那样
+    `from ..services.redemption import redeem as redeem_code`，模块级名字会被本函数
+    （同名 `redeem_code`）覆盖，导致路由调用自己：AttributeError → 纯文本 500。
+    """
+    try:
+        amount = redeem_redemption_code(db, user, request.code)
+        balance_row = db.execute("SELECT balance FROM users WHERE id = ?", (user["id"],)).fetchone()
+    except HTTPException:
+        raise
+    except sqlite3.Error as exc:
+        logger.exception("兑换码接口数据库异常：user=%s", user["id"])
+        raise HTTPException(status_code=500, detail={"code": "REDEMPTION_FAILED", "message": "兑换失败，请稍后重试"}) from exc
+    except Exception as exc:  # noqa: BLE001 - 兜底：任何意外异常都转成标准业务错误
+        logger.exception("兑换码接口未预期异常：user=%s", user["id"])
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "REDEMPTION_SERVER_ERROR", "message": "兑换失败，服务器异常，请稍后重试"},
+        ) from exc
+    return {
+        "success": True,
+        "amount": round(float(amount), 2),
+        "balance": round(float(balance_row["balance"] if balance_row else 0), 2),
     }

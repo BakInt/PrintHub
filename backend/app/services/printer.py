@@ -560,7 +560,20 @@ def print_pdf(
     double_sided: bool,
     printer_name: str | None = None,
     default_printer: str | None = None,
+    use_color: bool | None = None,
 ) -> tuple[str | None, str | None]:
+    """提交打印。
+
+    【新增功能】use_color（彩色打印开关）三态语义，保证向后兼容：
+      - None（默认）：调用方没有明确指定，**完全沿用原有打印逻辑**（加深 LUT + 不下发
+        print-color-mode），历史订单/旧前端不受影响。
+      - True：彩色打印。跳过 _darken_faint_content 的加深/近似灰阶处理（不做任何黑白转换），
+        并显式下发 CUPS `print-color-mode=color`，原样提交原始色彩文件给打印机。
+      - False：明确黑白。保留原有加深处理，并显式下发 `print-color-mode=monochrome`。
+    整页光栅化（防「公式整块消失」）在三种情况下都保留，它只把矢量页渲染成位图，
+    彩色模式渲染出的仍是彩色位图，不属于「转黑白」。
+    Windows（SumatraPDF / PrintTo）分支暂不读取 use_color，保持原有行为不变。
+    """
     settings = get_settings()
     if _platform_name() == "windows":
         return _windows_print_pdf(pdf_path, printer_name or default_printer or settings.default_printer)
@@ -577,8 +590,10 @@ def print_pdf(
     # 直接打印原 PDF，绝不阻断打印。页数、页序保持一致，份数/双面参数语义不变。
     submit_path = pdf_path
     # 光栅化「尽力而为」：任何异常都降级为直接打印原 PDF，绝不让后处理导致打印接口 500。
+    # 【新增功能】use_color=True 时传 darken=False，光栅化只去透明、不做加深/灰阶映射，
+    # 保证用户勾选彩色时文件不会被转成黑白。
     try:
-        rasterized_path = rasterize_pdf_for_print(pdf_path)
+        rasterized_path = rasterize_pdf_for_print(pdf_path, darken=use_color is not True)
     except Exception:
         rasterized_path = None
     if rasterized_path is not None:
@@ -588,6 +603,11 @@ def print_pdf(
         command.extend(["-n", str(copies)])
     if double_sided:
         command.extend(["-o", "sides=two-sided-long-edge"])
+    # 【新增功能】显式告知 CUPS/打印机色彩模式；None（未指定）时不下发，保持原有行为。
+    if use_color is True:
+        command.extend(["-o", "print-color-mode=color"])
+    elif use_color is False:
+        command.extend(["-o", "print-color-mode=monochrome"])
     command.append(str(submit_path))
     try:
         result = _run(command, timeout=30)

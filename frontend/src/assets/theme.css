@@ -1,0 +1,383 @@
+/* ============================================================================
+ * 主题变量（亮色 / 深色）——PC 电脑端与移动手机端完全分开独立定义
+ * ----------------------------------------------------------------------------
+ * 重要约定（与 doc/UI_ADAPTATION.md 配套）：
+ * 1. 本文件只放「主题变量」，不放任何组件规则、不影响布局；组件颜色统一写成
+ *    var(--cp-xxx)（在 styles.css 里引用）。
+ * 2. PC 端与移动端是**两套互不共用的变量取值**，绝不靠一套 CSS 同时控制两端：
+ *    - PC 端（宽屏）：只使用 :root 里的变量 → 只读「PC 亮色」或「PC 深色」块的值。
+ *    - 移动端（≤767px，与 styles.css 手机主断点一致）：在媒体查询内用「移动端
+ *      亮色 / 移动端深色」块覆盖同名变量 → 只读移动端那两套值。
+ *    因此移动端改配色不会波及电脑版，电脑版改配色也不会波及手机端；每个块都用
+ *    注释标明了归属，便于后续单独维护。
+ * 3. 亮暗由 <html data-theme="light|dark"> 决定（见 src/stores/theme.js）：
+ *    用户没选过 → 跟随操作系统 prefers-color-scheme；选过 → 读 localStorage。
+ * 4. 新增颜色一律先在这里加变量，不要在 styles.css 里写死十六进制色值。
+ * ========================================================================= */
+
+/* ---------------------------------------------------------------------------
+ * 1. PC 电脑端 · 亮色主题（桌面基础层，默认值）
+ * ------------------------------------------------------------------------- */
+:root {
+  color-scheme: light;
+
+  /* 品牌色（PC 端沿用既有蓝色体系） */
+  --cp-brand: #2563eb;
+  --cp-brand-strong: #1e40af;
+  --cp-brand-deep: #1d4ed8;
+  --cp-brand-text: #1e40af;
+  --cp-brand-border: #bfdbfe;
+  --cp-brand-soft: #eff6ff;
+  --cp-brand-softer: #dbeafe;
+  --cp-brand-emphasis: #1e3a8a;
+  --cp-header-brand: #1e40af;
+  /* 渐变端点（PC 亮色）：卡片/上传区/按钮的渐变首尾色 */
+  --cp-brand-bright: #2563eb;
+  --cp-brand-mid: #6366f1;
+  --cp-brand-hi: #60a5fa;
+  --cp-accent-deep: #0f766e;
+  --cp-gradient-soft: #f5f3ff;
+  --cp-gradient-intro: #eef4ff;
+  --cp-gradient-drop: #f8fbff;
+  --cp-gradient-drop-2: #eef5ff;
+  --cp-chip-accent: #ddd6fe;
+  /* 彩色色卡（后台打印能力指示点，非主题色，仅作说明） */
+  --cp-swatch-red: #ef4444;
+  --cp-swatch-amber: #f59e0b;
+  --cp-swatch-green: #22c55e;
+  --cp-swatch-cyan: #06b6d4;
+  --cp-swatch-purple: #a855f7;
+
+  /* 中性色阶：应用底色 / 卡片 / 柔和底 / 更浅底 */
+  --cp-app-bg: #f8fafc;
+  --cp-surface: #fff;
+  --cp-surface-glass: rgba(248, 250, 252, 0.97);
+  --cp-soft: #f8fafc;
+  --cp-softer: #f1f5f9;
+
+  /* 边框 / 分割线 */
+  --cp-border: #e2e8f0;
+  --cp-border-soft: #e6e9f5;
+  --cp-border-mid: #cbd5e1;
+  --cp-border-input: #cbd5e1;
+
+  /* 文字层级：标题 / 正文 / 次要 / 更淡 */
+  --cp-ink-title: #0f172a;
+  --cp-ink-strong: #1e293b;
+  --cp-ink-body: #475569;
+  --cp-ink-sub: #64748b;
+  --cp-ink-muted: #94a3b8;
+
+  /* 阴影 */
+  --cp-shadow-1: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --cp-shadow-3: 0 6px 18px rgba(15, 23, 42, 0.05);
+  --cp-shadow-4: 0 8px 24px rgba(15, 23, 42, 0.08);
+  --cp-shadow-5: 0 14px 34px rgba(15, 23, 42, 0.05);
+  --cp-shadow-6: 0 14px 34px rgba(15, 23, 42, 0.16);
+  --cp-shadow-brand: 0 8px 20px rgba(37, 99, 235, 0.18);
+  --cp-shadow-brand-lg: 0 16px 34px rgba(79, 70, 229, 0.32);
+  --cp-shadow-button: 0 8px 18px rgba(37, 99, 235, 0.22);
+  --cp-shadow-tabbar: 0 -6px 20px rgba(15, 23, 42, 0.08);
+  --cp-white-soft: rgba(255, 255, 255, 0.16);
+  --cp-white-dim: rgba(255, 255, 255, 0.86);
+  --cp-swatch-inset: inset 0 0 0 1px rgba(15, 23, 42, 0.12);
+  --cp-overlay: rgba(15, 23, 42, 0.5);
+
+  /* 状态色：成功 / 提醒（黄） / 危险 / 信息 */
+  --cp-success: #16a34a;
+  --cp-success-strong: #15803d;
+  --cp-success-badge: #166534;
+  --cp-success-soft: #f0fdf4;
+  --cp-success-border: #bbf7d0;
+  --cp-success-chip: #dcfce7;
+  --cp-warn: #92400e;
+  --cp-warn-soft: #fef3c7;
+  --cp-danger: #dc2626;
+  --cp-danger-strong: #b91c1c;
+  --cp-danger-deep: #991b1b;
+  --cp-danger-soft: #fef2f2;
+  --cp-danger-softest: #fff7f7;
+  --cp-danger-border: #fecaca;
+  --cp-danger-chip: #fee2e2;
+
+  /* 图片 / 图标在深色下的适配（CSS 滤镜，不改图片文件） */
+  --cp-img-filter: none;
+  --cp-preview-bg: #fff;
+}
+
+/* ---------------------------------------------------------------------------
+ * 2. PC 电脑端 · 深色主题（<html data-theme="dark"> 且为宽屏时生效）
+ * ------------------------------------------------------------------------- */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* 品牌色：深色底上提高亮度保证对比度 */
+  --cp-brand: #60a5fa;
+  --cp-brand-strong: #93c5fd;
+  --cp-brand-deep: #3b82f6;
+  --cp-brand-text: #bfdbfe;
+  --cp-brand-border: #2b4a76;
+  --cp-brand-soft: #16233a;
+  --cp-brand-softer: #1d3355;
+  --cp-brand-emphasis: #dbeafe;
+  --cp-header-brand: #93c5fd;
+  /* 渐变端点（PC 深色）：整体压暗，避免深色页面上出现刺眼亮块 */
+  --cp-brand-bright: #3b82f6;
+  --cp-brand-mid: #4f46e5;
+  --cp-brand-hi: #60a5fa;
+  --cp-accent-deep: #0f766e;
+  --cp-gradient-soft: #1a2440;
+  --cp-gradient-intro: #16233a;
+  --cp-gradient-drop: #16233a;
+  --cp-gradient-drop-2: #1b2a44;
+  --cp-chip-accent: #3730a3;
+  --cp-swatch-red: #f87171;
+  --cp-swatch-amber: #fbbf24;
+  --cp-swatch-green: #4ade80;
+  --cp-swatch-cyan: #22d3ee;
+  --cp-swatch-purple: #c084fc;
+
+  --cp-app-bg: #0b1220;
+  --cp-surface: #111a2b;
+  --cp-surface-glass: rgba(17, 26, 43, 0.92);
+  --cp-soft: #162034;
+  --cp-softer: #1b263c;
+
+  --cp-border: #26344c;
+  --cp-border-soft: #223049;
+  --cp-border-mid: #37496a;
+  --cp-border-input: #3a4c6e;
+
+  --cp-ink-title: #eef3fb;
+  --cp-ink-strong: #dfe6f2;
+  --cp-ink-body: #b6c2d6;
+  --cp-ink-sub: #93a1b8;
+  --cp-ink-muted: #7b8aa3;
+
+  --cp-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --cp-shadow-3: 0 6px 18px rgba(0, 0, 0, 0.4);
+  --cp-shadow-4: 0 8px 24px rgba(0, 0, 0, 0.45);
+  --cp-shadow-5: 0 14px 34px rgba(0, 0, 0, 0.45);
+  --cp-shadow-6: 0 14px 34px rgba(0, 0, 0, 0.6);
+  --cp-shadow-brand: 0 8px 20px rgba(37, 99, 235, 0.35);
+  --cp-shadow-brand-lg: 0 16px 34px rgba(37, 99, 235, 0.4);
+  --cp-shadow-button: 0 8px 18px rgba(37, 99, 235, 0.32);
+  --cp-shadow-tabbar: 0 -6px 20px rgba(0, 0, 0, 0.55);
+  --cp-white-soft: rgba(255, 255, 255, 0.14);
+  --cp-white-dim: rgba(255, 255, 255, 0.9);
+  --cp-swatch-inset: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
+  --cp-overlay: rgba(2, 6, 18, 0.72);
+
+  --cp-success: #4ade80;
+  --cp-success-strong: #86efac;
+  --cp-success-badge: #bbf7d0;
+  --cp-success-soft: #12271c;
+  --cp-success-border: #276749;
+  --cp-success-chip: #16351f;
+  --cp-warn: #fcd34d;
+  --cp-warn-soft: #3a2c0c;
+  --cp-danger: #f87171;
+  --cp-danger-strong: #fca5a5;
+  --cp-danger-deep: #fecaca;
+  --cp-danger-soft: #35171b;
+  --cp-danger-softest: #291114;
+  --cp-danger-border: #7f2f36;
+  --cp-danger-chip: #43181d;
+
+  --cp-img-filter: brightness(0.92) contrast(1.04);
+  --cp-preview-bg: #1a2436;
+}
+
+/* ---------------------------------------------------------------------------
+ * 3. 移动手机端 · 亮色主题（仅 ≤767px；与 PC 端变量取值完全独立）
+ *    这里保留手机端的蓝紫风取值，并针对小屏调高了文字/正文的对比度。
+ * ------------------------------------------------------------------------- */
+@media (max-width: 767px) {
+  :root {
+    --cp-brand: #4f46e5;
+    --cp-brand-text: #4338ca;
+    --cp-brand-border: #e0e7ff;
+    --cp-brand-soft: #eef2ff;
+    --cp-brand-softer: #e6e9f5;
+    --cp-brand-deep: #4f46e5;
+    --cp-brand-emphasis: #4338ca;
+    --cp-header-brand: #4338ca;
+    /* 渐变端点（移动亮色）：手机端蓝紫风 */
+    --cp-brand-bright: #6366f1;
+    --cp-brand-mid: #818cf8;
+    --cp-brand-hi: #a5b4fc;
+    --cp-accent-deep: #7c3aed;
+    --cp-gradient-soft: #f5f3ff;
+    --cp-gradient-intro: #eef4ff;
+    --cp-gradient-drop: #f8fbff;
+    --cp-gradient-drop-2: #eef5ff;
+    --cp-chip-accent: #ddd6fe;
+    --cp-swatch-red: #ef4444;
+    --cp-swatch-amber: #f59e0b;
+    --cp-swatch-green: #22c55e;
+    --cp-swatch-cyan: #06b6d4;
+    --cp-swatch-purple: #a855f7;
+
+    --cp-app-bg: #f1f5fb;
+    --cp-surface: #fff;
+    --cp-surface-glass: rgba(255, 255, 255, 0.96);
+    --cp-soft: #f8fafc;
+    --cp-softer: #eef2ff;
+
+    --cp-border: #e0e7ff;
+    --cp-border-soft: #e6e9f5;
+    --cp-border-mid: #c7d2fe;
+    --cp-border-input: #d6dced;
+
+    --cp-ink-title: #1e293b;
+    --cp-ink-strong: #0f172a;
+    --cp-ink-body: #334155;
+    --cp-ink-sub: #64748b;
+    --cp-ink-muted: #94a3b8;
+    --cp-shadow-brand-lg: 0 16px 34px rgba(79, 70, 229, 0.32);
+    --cp-shadow-button: 0 8px 18px rgba(79, 70, 229, 0.28);
+    --cp-shadow-tabbar: 0 -6px 20px rgba(15, 23, 42, 0.12);
+    --cp-white-soft: rgba(255, 255, 255, 0.16);
+    --cp-white-dim: rgba(255, 255, 255, 0.88);
+
+    /* 状态色（移动亮色单独成组，不继承 PC 端） */
+    --cp-success: #16a34a;
+    --cp-success-strong: #15803d;
+    --cp-success-badge: #166534;
+    --cp-success-soft: #f0fdf4;
+    --cp-success-border: #bbf7d0;
+    --cp-success-chip: #dcfce7;
+    --cp-warn: #92400e;
+    --cp-warn-soft: #fef3c7;
+    --cp-danger: #dc2626;
+    --cp-danger-strong: #b91c1c;
+    --cp-danger-deep: #991b1b;
+    --cp-danger-soft: #fef2f2;
+    --cp-danger-softest: #fff7f7;
+    --cp-danger-border: #fecaca;
+    --cp-danger-chip: #fee2e2;
+
+    /* 品牌补全 / 媒体（移动亮色同样显式声明，避免继承 PC 端） */
+    --cp-brand-strong: #3730a3;
+    --cp-img-filter: none;
+    --cp-preview-bg: #fff;
+    --cp-swatch-inset: inset 0 0 0 1px rgba(15, 23, 42, 0.12);
+    --cp-shadow-1: 0 1px 2px rgba(15, 23, 42, 0.04);
+    --cp-shadow-3: 0 6px 18px rgba(15, 23, 42, 0.05);
+    --cp-shadow-4: 0 8px 24px rgba(15, 23, 42, 0.08);
+    --cp-shadow-5: 0 14px 34px rgba(15, 23, 42, 0.05);
+    --cp-shadow-6: 0 14px 34px rgba(15, 23, 42, 0.16);
+    --cp-shadow-brand: 0 8px 20px rgba(79, 70, 229, 0.24);
+    --cp-overlay: rgba(15, 23, 42, 0.5);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * 4. 移动手机端 · 深色主题（仅 ≤767px 且 data-theme="dark"）
+ *    与 PC 深色是两套值：底色偏蓝紫、文字更亮，保证手机小屏下的可读性。
+ * ------------------------------------------------------------------------- */
+@media (max-width: 767px) {
+  :root[data-theme='dark'] {
+    color-scheme: dark;
+
+    --cp-brand: #818cf8;
+    --cp-brand-text: #c7d2fe;
+    --cp-brand-border: #35376a;
+    --cp-brand-soft: #1c2040;
+    --cp-brand-softer: #262a52;
+    --cp-brand-deep: #6366f1;
+    --cp-brand-emphasis: #e0e7ff;
+    --cp-header-brand: #c7d2fe;
+    /* 渐变端点（移动深色）：偏蓝紫的暗色渐变，保证白字在按钮上清晰 */
+    --cp-brand-bright: #6366f1;
+    --cp-brand-mid: #4f46e5;
+    --cp-brand-hi: #818cf8;
+    --cp-accent-deep: #7c3aed;
+    --cp-gradient-soft: #1e2244;
+    --cp-gradient-intro: #1a1f3c;
+    --cp-gradient-drop: #1a1f3c;
+    --cp-gradient-drop-2: #212650;
+    --cp-chip-accent: #4236a0;
+    --cp-swatch-red: #f87171;
+    --cp-swatch-amber: #fbbf24;
+    --cp-swatch-green: #4ade80;
+    --cp-swatch-cyan: #22d3ee;
+    --cp-swatch-purple: #c084fc;
+
+    --cp-app-bg: #0a0d1a;
+    --cp-surface: #141930;
+    --cp-surface-glass: rgba(20, 25, 48, 0.94);
+    --cp-soft: #191f38;
+    --cp-softer: #1f2544;
+
+    --cp-border: #2b3255;
+    --cp-border-soft: #272e4e;
+    --cp-border-mid: #3d4577;
+    --cp-border-input: #414a80;
+
+    --cp-ink-title: #f1f3ff;
+    --cp-ink-strong: #e4e8ff;
+    --cp-ink-body: #bcc4e4;
+    --cp-ink-sub: #99a2c4;
+    --cp-ink-muted: #828cb0;
+    --cp-shadow-brand-lg: 0 16px 34px rgba(79, 70, 229, 0.38);
+    --cp-shadow-button: 0 8px 18px rgba(79, 70, 229, 0.36);
+    --cp-shadow-tabbar: 0 -6px 20px rgba(0, 0, 0, 0.6);
+    --cp-white-soft: rgba(255, 255, 255, 0.18);
+    --cp-white-dim: rgba(255, 255, 255, 0.92);
+    --cp-brand-strong: #a5b4fc;
+    --cp-img-filter: brightness(0.92) contrast(1.04);
+    --cp-shadow-brand: 0 8px 20px rgba(79, 70, 229, 0.4);
+    --cp-swatch-inset: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
+
+    --cp-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --cp-shadow-3: 0 6px 18px rgba(0, 0, 0, 0.45);
+    --cp-shadow-4: 0 8px 24px rgba(0, 0, 0, 0.5);
+    --cp-shadow-5: 0 14px 34px rgba(0, 0, 0, 0.5);
+    --cp-shadow-6: 0 14px 34px rgba(0, 0, 0, 0.65);
+    --cp-overlay: rgba(4, 6, 18, 0.76);
+
+    --cp-success: #4ade80;
+    --cp-success-strong: #86efac;
+    --cp-success-badge: #bbf7d0;
+    --cp-success-soft: #10251b;
+    --cp-success-border: #2a6b4a;
+    --cp-success-chip: #143220;
+    --cp-warn: #fcd34d;
+    --cp-warn-soft: #35270b;
+    --cp-danger: #fb7185;
+    --cp-danger-strong: #fda4af;
+    --cp-danger-deep: #fecdd3;
+    --cp-danger-soft: #32151d;
+    --cp-danger-softest: #281015;
+    --cp-danger-border: #7c2b3c;
+    --cp-danger-chip: #3f1722;
+
+    --cp-preview-bg: #1b2140;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * 5. 主题切换过渡：只过渡颜色类属性，避免布局抖动；首次渲染不加过渡（防闪一下）
+ * ------------------------------------------------------------------------- */
+html.theme-ready,
+html.theme-ready *:not(iframe) {
+  transition: background-color 0.25s ease, color 0.25s ease,
+    border-color 0.25s ease, box-shadow 0.25s ease, fill 0.25s ease,
+    stroke 0.25s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.theme-ready,
+  html.theme-ready *:not(iframe) {
+    transition: none;
+  }
+}
+
+/* 深色下统一关掉系统自带控件的强白底（日期选择器、滚动条等） */
+html[data-theme='dark'] input,
+html[data-theme='dark'] select,
+html[data-theme='dark'] textarea,
+html[data-theme='dark'] button {
+  color-scheme: dark;
+}

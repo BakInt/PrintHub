@@ -36,6 +36,21 @@ def payment_subject_for_order(order_id: str, order_type: str | None = None) -> s
     return PAYMENT_SUBJECT
 
 
+def resolve_order_printer(db: sqlite3.Connection, printer_name: str | None) -> sqlite3.Row | None:
+    """【新增功能】解析本次订单实际使用的打印机记录（用于校验彩色/自动双面能力）。
+
+    订单未指定打印机时使用后台「默认打印机」。查不到记录时返回 None，此时跳过能力校验，
+    保证没有维护打印机元数据的老部署依然可以正常下单打印。
+    """
+    name = printer_name
+    if not name:
+        row = db.execute("SELECT value FROM settings WHERE key = 'default_printer'").fetchone()
+        name = row["value"] if row else None
+    if not name:
+        return None
+    return db.execute("SELECT * FROM printers WHERE name = ?", (name,)).fetchone()
+
+
 def dispatch_print_files_if_present(db: sqlite3.Connection, order_id: str) -> None:
     if order_has_print_files(db, order_id):
         dispatch_order_print(db, order_id)
@@ -65,6 +80,10 @@ def dispatch_order_print(db: sqlite3.Connection, order_id: str) -> None:
         return
     default_printer = db.execute("SELECT value FROM settings WHERE key = 'default_printer'").fetchone()
     default_value = default_printer["value"] if default_printer else None
+    # 【新增功能】彩色打印：orders.use_color 为 NULL 表示历史订单/旧前端未指定，
+    # 此时向 print_pdf 传 None，完全沿用原有打印逻辑（不转黑白也不强制黑白）。
+    color_raw = order["use_color"]
+    use_color = None if color_raw is None else bool(color_raw)
     errors = []
     job_ids = []
     for file_row in files:
@@ -74,6 +93,7 @@ def dispatch_order_print(db: sqlite3.Connection, order_id: str) -> None:
             bool(file_row["is_double_sided"]),
             order["printer_name"],
             default_printer=default_value,
+            use_color=use_color,
         )
         if error:
             errors.append(error)
@@ -115,6 +135,10 @@ def create_order(
     # 按份双面：file_settings 中指定的文件用其独立设置，未指定的回退到全局 double_sided。
     duplex_map = payload.print_settings.double_sided_map()
     global_duplex = payload.print_settings.double_sided
+    # 【新增功能】自动双面总开关 use_auto_duplex：显式传入时作为「未单独设置的文件」的
+    # 全局默认值（逐份 file_settings 仍然优先）；未传（None）时完全沿用原有全局 double_sided。
+    if payload.print_settings.use_auto_duplex is not None:
+        global_duplex = bool(payload.print_settings.use_auto_duplex)
     requested_duplex = {
         item["id"]: bool(duplex_map[item["id"]]) if item["id"] in duplex_map else global_duplex
         for item in files
@@ -151,19 +175,32 @@ def create_order(
     # 订单级 is_double_sided 作为聚合标识：任一文档启用双面即为真，
     # 真正的按份设置存于 order_items.is_double_sided。
     order_double_sided = any(effective_duplex.values())
+    # 【新增功能】打印机能力兜底校验：前端已按打印机能力条件渲染，这里再校验一次，
+    # 防止绕过前端提交打印机并不支持的能力。查不到打印机记录时跳过（兼容老部署）。
+    printer_row = resolve_order_printer(db, payload.print_settings.printer_name)
+    if printer_row is not None:
+        if payload.print_settings.use_color is True and not bool(printer_row["is_support_color"]):
+            raise HTTPException(status_code=400, detail="该打印机未开启彩色打印，请重新选择打印方式")
+        if order_double_sided and not bool(printer_row["is_support_auto_duplex"]):
+            raise HTTPException(status_code=400, detail="该打印机未开启自动双面打印，请重新选择打印方式")
+    # 【新增功能】彩色标记入库：NULL=未指定（旧前端/旧业务），1=彩色，0=黑白。
+    use_color_value = None
+    if payload.print_settings.use_color is not None:
+        use_color_value = 1 if payload.print_settings.use_color else 0
     db.execute(
         """
         INSERT INTO orders (
-            id, user_id, order_type, total_amount, is_double_sided, copies, payment_method, printer_name, contact_name, contact_phone,
+            id, user_id, order_type, total_amount, is_double_sided, use_color, copies, payment_method, printer_name, contact_name, contact_phone,
             sheet_count, base_amount, discount_amount, pricing_detail
         )
-        VALUES (?, ?, 'print', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, 'print', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             order_id,
             user_id,
             amount,
             1 if order_double_sided else 0,
+            use_color_value,
             payload.print_settings.copies,
             payload.payment_method,
             payload.print_settings.printer_name,

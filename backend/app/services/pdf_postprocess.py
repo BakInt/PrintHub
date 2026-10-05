@@ -222,8 +222,16 @@ def _darken_faint_content(image, white_keep: int = 235, black_at: int = 150):
     return rgb.point(lut * 3)
 
 
-def rasterize_pdf_for_print(pdf_path, dpi: int = 300):
+def rasterize_pdf_for_print(pdf_path, dpi: int = 300, darken: bool = True):
     """把 pdf_path 每页光栅化成不透明位图，重组为「纯图像 PDF」，返回新文件路径。
+
+    【新增功能】参数 darken（默认 True，等于原有行为）：
+      - darken=True：光栅化后套用 _darken_faint_content 的加深 LUT（原有逻辑，用于改善
+        老式公式的灰色笔画打印过淡问题）。
+      - darken=False：**彩色打印**专用。只做「去 alpha / 转不透明 RGB」，不做任何色调
+        映射，保证用户选择彩色时文件不会被转成黑白或做任何灰度处理，原样提交给打印机。
+        注意：整页光栅化本身仍然保留（它只把矢量页渲染成彩色位图），是防「公式整块消失」
+        的必要环节，不属于「黑白转换」。
 
     为什么打印链路需要这一步（此系统化学式打印消失的根治手段）
     ----------------------------------------------------------------
@@ -293,8 +301,11 @@ def rasterize_pdf_for_print(pdf_path, dpi: int = 300):
         images = []
         for page_png in pages:
             with Image.open(page_png) as img:
-                # 强制不透明 RGB（去除任何 alpha），再加深偏灰的公式笔画，改善打印浓淡。
-                images.append(_darken_faint_content(img))
+                # 强制不透明 RGB（去除任何 alpha）。
+                # 【新增功能】彩色打印（darken=False）只去透明、不做色调映射；
+                # 黑白打印（darken=True）沿用原有「加深偏灰公式笔画」处理。
+                rgb = img.convert("RGB")
+                images.append(_darken_faint_content(rgb) if darken else rgb)
         out_path = pdf_path.with_name(pdf_path.stem + ".print.pdf")
         images[0].save(
             out_path,

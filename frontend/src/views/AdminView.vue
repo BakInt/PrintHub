@@ -6,6 +6,57 @@
       </button>
     </aside>
 
+    <!-- 手机端底部 Tab 栏：桌面端默认 display:none，只在 767px 内显示（见 styles.css）。
+         后台一共 8 个 Tab，底部栏放不下，所以前 4 个常用 Tab 常驻，其余收进「更多」面板；
+         桌面端仍由上面的 .admin-menu 展示全部 Tab，两端共用同一个 tab 状态与 loadTab()。 -->
+    <nav class="admin-tabbar" aria-label="后台导航">
+      <button
+        v-for="item in primaryTabs"
+        :key="item.key"
+        type="button"
+        class="admin-tab-item"
+        :class="{ active: tab === item.key }"
+        @click="selectTab(item.key)"
+      >
+        <component :is="item.icon" :size="22" />
+        <span>{{ item.label }}</span>
+      </button>
+      <button
+        type="button"
+        class="admin-tab-item"
+        :class="{ active: moreActive }"
+        aria-haspopup="dialog"
+        :aria-expanded="moreOpen ? 'true' : 'false'"
+        @click="moreOpen = !moreOpen"
+      >
+        <component :is="moreCurrent ? moreCurrent.icon : MoreHorizontal" :size="22" />
+        <span>{{ moreCurrent ? moreCurrent.label : '更多' }}</span>
+      </button>
+    </nav>
+
+    <div v-if="moreOpen" class="admin-more-mask" @click.self="moreOpen = false">
+      <div class="admin-more-sheet" role="dialog" aria-label="更多后台功能">
+        <div class="admin-more-head">
+          <strong>更多功能</strong>
+          <button type="button" class="icon-btn" aria-label="关闭" @click="moreOpen = false">×</button>
+        </div>
+        <div class="admin-more-list">
+          <button
+            v-for="item in moreTabs"
+            :key="item.key"
+            type="button"
+            class="admin-more-item"
+            :class="{ selected: tab === item.key }"
+            @click="selectTab(item.key)"
+          >
+            <component :is="item.icon" :size="20" />
+            <span>{{ item.label }}</span>
+          </button>
+        </div>
+        <RouterLink class="admin-more-back" to="/">返回前台首页</RouterLink>
+      </div>
+    </div>
+
     <div class="panel admin-panel">
       <div v-if="feedback" :class="['notice', feedbackType]">{{ feedback }}</div>
 
@@ -20,6 +71,8 @@
           <div class="metric-card"><span>正在打印</span><strong>{{ dashboard?.totals.printing_count || 0 }}</strong></div>
           <div class="metric-card"><span>排队中</span><strong>{{ dashboard?.totals.queue_count || 0 }}</strong></div>
         </div>
+
+        <DailyStatsCard />
       </template>
 
       <template v-if="tab === 'orders'">
@@ -408,7 +461,19 @@
                 <span>队列任务：{{ printer.queued_jobs || 0 }}</span>
                 <span>状态：{{ printer.is_enabled ? '启用' : '停用' }}</span>
               </div>
+              <!-- 【新增功能】打印机能力标识：这两个开关决定前台是否展示「彩色打印」「自动双面打印」。 -->
+              <div class="printer-caps">
+                <span class="cap-tag" :class="printer.is_support_color ? 'on color' : 'off'">
+                  <span class="cap-dot color"></span>{{ printer.is_support_color ? '支持彩色打印' : '仅黑白打印' }}
+                </span>
+                <span class="cap-tag" :class="printer.is_support_auto_duplex ? 'on duplex' : 'off'">
+                  <span class="cap-dot duplex"></span>{{ printer.is_support_auto_duplex ? '支持自动双面' : '仅单面打印' }}
+                </span>
+              </div>
               <div class="printer-actions">
+                <button class="action-btn" @click="openPrinterEditor(printer)" title="编辑打印机（彩色 / 自动双面能力）">
+                  <Pencil :size="16" />
+                </button>
                 <button v-if="!printer.is_default" class="action-btn" @click="makeDefault(printer.name)" title="设置默认打印机">
                   <CheckCircle :size="16" />
                 </button>
@@ -492,6 +557,25 @@
                   <label><input v-model="printerForm.is_default" type="checkbox" /> 设置为默认打印机</label>
                   <label><input v-model="printerForm.is_enabled" type="checkbox" /> 启用打印机</label>
                   <label><input v-model="printerForm.accepting_jobs" type="checkbox" /> 接收打印任务</label>
+                </div>
+
+                <!-- 【新增功能】打印机能力：持久化到 printers 表，并决定前台打印页是否展示对应选项。 -->
+                <div class="form-row capability-row">
+                  <div class="capability-heading">打印机能力</div>
+                  <label class="capability-toggle">
+                    <input v-model="printerForm.is_support_color" type="checkbox" />
+                    <span class="capability-text">
+                      <strong><span class="swatch color"></span>支持彩色打印</strong>
+                      <small>开启后前台展示「彩色打印」，勾选彩色时文件按原始色彩直接送印；关闭后前台完全隐藏该选项，并按黑白流程处理。</small>
+                    </span>
+                  </label>
+                  <label class="capability-toggle">
+                    <input v-model="printerForm.is_support_auto_duplex" type="checkbox" />
+                    <span class="capability-text">
+                      <strong><span class="swatch duplex"></span>支持自动双面打印</strong>
+                      <small>开启后前台展示「自动双面」；关闭后前台完全隐藏该选项，所有任务按单面打印。</small>
+                    </span>
+                  </label>
                 </div>
 
                 <div class="form-actions">
@@ -616,14 +700,245 @@
           <div v-if="backups.length === 0" class="empty-preview compact-empty">暂无备份</div>
         </section>
       </template>
+
+      <template v-if="tab === 'redemptions'">
+        <div class="section-heading compact redemption-heading">
+          <div>
+            <p class="eyebrow">兑换码</p>
+            <h1>兑换码管理</h1>
+          </div>
+          <div class="row-actions">
+            <label class="redemption-search">
+              <input v-model.trim="redemptionSearch" class="input" placeholder="搜索兑换码" @keyup.enter="loadRedemptions" />
+            </label>
+            <button class="secondary-btn" @click="openAddRedemption"><Plus :size="18" />手动新增</button>
+            <button class="secondary-btn" @click="openBatchRedemption"><RefreshCw :size="18" />批量生成</button>
+          </div>
+        </div>
+
+        <!-- 表格精简为 5 列（兑换码 / 面额 / 有效期 / 使用状态 / 操作），其余次要信息移入「详情」抽屉。
+             外层滚动容器只是安全网：列宽自适应，正常情况下不会出现横向滚动条；
+             万一容器过窄而横向溢出，「操作」列会 sticky 固定在右侧，详情/删除始终可见可点击。 -->
+        <div class="redemption-table-scroll">
+          <div class="redemption-table">
+            <div class="redemption-table-head">
+              <span>兑换码</span>
+              <span>兑换面额</span>
+              <span>有效期</span>
+              <span>使用状态</span>
+              <span class="redemption-cell-actions">操作</span>
+            </div>
+            <article v-for="code in redemptions" :key="code.id" class="redemption-row">
+              <strong class="redemption-code" :title="code.code">{{ code.code }}</strong>
+              <strong class="redemption-amount">¥{{ Number(code.amount).toFixed(2) }}</strong>
+              <!-- 【新增功能】有效期列兼容两种配置：指定到期日期的码只显示到期时刻；
+                   按天数的码额外标明天数（存量数据与之前显示一致，仅多了「N 天 ·」前缀）。 -->
+              <span>{{ redemptionExpiryText(code) }}</span>
+              <span :class="['badge', redemptionStatusClass(code.status)]">{{ redemptionStatusLabel(code.status) }}</span>
+              <div class="row-actions redemption-cell-actions">
+                <button class="secondary-btn small" @click="openRedemptionDetail(code)"><Eye :size="16" />详情</button>
+                <button class="secondary-btn small danger" @click="deleteRedemption(code)"><Trash2 :size="16" />删除</button>
+              </div>
+            </article>
+            <div v-if="redemptions.length === 0" class="empty-preview compact-empty">暂无兑换码</div>
+          </div>
+        </div>
+        <div v-if="redemptionsHasMore" class="orders-more">
+          <button class="secondary-btn load-more-btn" @click="loadMoreRedemptions" :disabled="redemptionLoadingMore">{{ redemptionLoadingMore ? '加载中...' : '加载更多' }}</button>
+        </div>
+
+        <!-- 手动新增兑换码 -->
+        <div v-if="showAddRedemptionModal" class="modal-overlay" @click.self="closeAddRedemptionModal">
+          <div class="modal-content redemption-modal">
+            <div class="modal-header redemption-modal-header">
+              <h2>手动新增兑换码</h2>
+              <button class="close-btn" @click="closeAddRedemptionModal">×</button>
+            </div>
+            <div class="modal-body">
+              <form @submit.prevent="saveAddRedemption" class="add-printer-form redemption-form">
+                <div class="form-row">
+                  <label>兑换码</label>
+                  <input v-model.trim="redemptionForm.code" class="input" placeholder="自定义兑换码（留空随机生成）" maxlength="64" />
+                </div>
+                <div class="form-row">
+                  <label>兑换面额（元）</label>
+                  <input v-model.number="redemptionForm.amount" class="input" type="number" min="0.01" step="0.01" required />
+                </div>
+                <div class="form-row">
+                  <label>可用次数</label>
+                  <input v-model.number="redemptionForm.usable_count" class="input" type="number" min="1" step="1" />
+                </div>
+                <!-- 【新增功能】有效期支持「按天数」或「直接指定到期日期」两种互斥方式：
+                     分段切换后只保留其中一种输入（按天数→数字输入框；指定到期日期→原生日期选择器），
+                     从交互上保证两种方式不会同时生效。日期模式提交 expiry_mode='date' + expire_date。 -->
+                <div class="form-row expiry-row">
+                  <label>有效期</label>
+                  <div class="expiry-control">
+                    <div class="segmented expiry-mode">
+                      <button type="button" :class="{ selected: redemptionForm.expiry_mode === 'days' }" @click="redemptionForm.expiry_mode = 'days'">按天数</button>
+                      <button type="button" :class="{ selected: redemptionForm.expiry_mode === 'date' }" @click="redemptionForm.expiry_mode = 'date'">指定到期日期</button>
+                    </div>
+                    <input
+                      v-if="redemptionForm.expiry_mode === 'days'"
+                      v-model.number="redemptionForm.valid_days"
+                      class="input"
+                      type="number"
+                      min="0"
+                      step="1"
+                      placeholder="0 表示永久有效"
+                    />
+                    <input v-else v-model="redemptionForm.expire_date" class="input" type="date" />
+                    <p class="expiry-hint">{{ redemptionExpiryHint }}</p>
+                  </div>
+                </div>
+                <!-- 【单用户使用限制】带边框分组卡片：左侧开关（关闭时右侧数字输入框置灰禁用），
+                     右侧「最大使用次数」标签 + 数字输入框，底部一行简短提示。
+                     绑定与原实现完全一致：开关关闭提交 per_user_max_times=0（沿用原有「按可用次数」逻辑），
+                     开启后提交正整数 N，兑换时在 BEGIN IMMEDIATE 写锁内双重校验。 -->
+                <section class="per-user-card">
+                  <h3 class="per-user-card-title">单用户使用限制</h3>
+                  <div class="per-user-card-body">
+                    <label class="toggle-switch per-user-toggle">
+                      <input v-model="redemptionForm.per_user_limit_enabled" type="checkbox" role="switch" />
+                      <span class="toggle-track" aria-hidden="true"></span>
+                      <span class="toggle-label">开启单用户次数限制</span>
+                    </label>
+                    <div class="per-user-limit-input">
+                      <label for="redemption-per-user-max">最大使用次数</label>
+                      <input
+                        id="redemption-per-user-max"
+                        v-model.number="redemptionForm.per_user_max_times"
+                        class="input"
+                        type="number"
+                        min="1"
+                        step="1"
+                        :disabled="!redemptionForm.per_user_limit_enabled"
+                        placeholder="请输入正整数"
+                      />
+                    </div>
+                  </div>
+                  <p class="per-user-card-hint">开启后，同一用户最多可使用该兑换码 {{ perUserMaxTimesHint }} 次。</p>
+                </section>
+                <div class="form-actions">
+                  <button type="button" class="secondary-btn" @click="closeAddRedemptionModal">取消</button>
+                  <button type="submit" class="primary-btn" :disabled="redemptionSaving">{{ redemptionSaving ? '保存中...' : '创建兑换码' }}</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+
+        <!-- 批量生成兑换码 -->
+        <div v-if="showBatchRedemptionModal" class="modal-overlay" @click.self="closeBatchRedemptionModal">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h2>批量生成兑换码</h2>
+              <button class="close-btn" @click="closeBatchRedemptionModal">×</button>
+            </div>
+            <div class="modal-body">
+              <form @submit.prevent="saveBatchRedemption" class="add-printer-form">
+                <div class="form-row">
+                  <label>生成数量</label>
+                  <input v-model.number="batchRedemptionForm.count" class="input" type="number" min="1" max="1000" step="1" />
+                </div>
+                <div class="form-row">
+                  <label>单张面额（元）</label>
+                  <input v-model.number="batchRedemptionForm.amount" class="input" type="number" min="0.01" step="0.01" required />
+                </div>
+                <div class="form-row">
+                  <label>可用次数</label>
+                  <input v-model.number="batchRedemptionForm.usable_count" class="input" type="number" min="1" step="1" />
+                </div>
+                <!-- 【新增功能】批量生成同样支持「按天数」/「指定到期日期」二选一，与手动新增一致。 -->
+                <div class="form-row expiry-row">
+                  <label>有效期</label>
+                  <div class="expiry-control">
+                    <div class="segmented expiry-mode">
+                      <button type="button" :class="{ selected: batchRedemptionForm.expiry_mode === 'days' }" @click="batchRedemptionForm.expiry_mode = 'days'">按天数</button>
+                      <button type="button" :class="{ selected: batchRedemptionForm.expiry_mode === 'date' }" @click="batchRedemptionForm.expiry_mode = 'date'">指定到期日期</button>
+                    </div>
+                    <input
+                      v-if="batchRedemptionForm.expiry_mode === 'days'"
+                      v-model.number="batchRedemptionForm.valid_days"
+                      class="input"
+                      type="number"
+                      min="0"
+                      step="1"
+                      placeholder="0 表示永久有效"
+                    />
+                    <input v-else v-model="batchRedemptionForm.expire_date" class="input" type="date" />
+                    <p class="expiry-hint">{{ batchRedemptionExpiryHint }}</p>
+                  </div>
+                </div>
+                <div v-if="batchResult.length" class="batch-result">
+                  <div class="batch-result-head"><strong>已生成 {{ batchResult.length }} 个兑换码</strong><button type="button" class="secondary-btn small" @click="copyBatchResult">复制全部</button></div>
+                  <div class="batch-result-codes">
+                    <span v-for="item in batchResult" :key="item.id" class="batch-code"><code>{{ item.code }}</code></span>
+                  </div>
+                </div>
+                <div class="form-actions">
+                  <button type="button" class="secondary-btn" @click="closeBatchRedemptionModal">取消</button>
+                  <button type="submit" class="primary-btn" :disabled="batchRefreshing">{{ batchRefreshing ? '生成中...' : '立即生成' }}</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+
+        <!-- 兑换码详情（二级界面）：右侧抽屉，完整展示该兑换码的全部信息与已兑换用户列表 -->
+        <div v-if="selectedRedemptionDetail" class="redemption-drawer-overlay" @click.self="closeRedemptionDetail">
+          <aside class="redemption-drawer">
+            <div class="redemption-drawer-header">
+              <div>
+                <p class="eyebrow">兑换码详情</p>
+                <h2 class="redemption-drawer-code">{{ selectedRedemptionDetail.code }}</h2>
+              </div>
+              <button class="close-btn" @click="closeRedemptionDetail">×</button>
+            </div>
+            <div class="redemption-drawer-body">
+              <div class="detail-grid redemption-detail-grid">
+                <span>完整兑换码<strong class="redemption-code">{{ selectedRedemptionDetail.code }}</strong></span>
+                <span>兑换面额<strong>¥{{ Number(selectedRedemptionDetail.amount).toFixed(2) }}</strong></span>
+                <span>已兑换次数<strong>{{ selectedRedemptionDetail.used_count }} / {{ selectedRedemptionDetail.usable_count }}</strong></span>
+                <span>生成时间<strong>{{ selectedRedemptionDetail.created_at ? formatDateTime(selectedRedemptionDetail.created_at) : '-' }}</strong></span>
+                <!-- 【新增功能】有效期类型：date=管理员指定到期日期（此时天数列显示 —），days=按有效天数。 -->
+                <span>有效期类型<strong>{{ selectedRedemptionDetail.expiry_mode === 'date' ? '指定到期日期' : '按有效天数' }}</strong></span>
+                <span>有效天数<strong>{{ redemptionDetailValidDays(selectedRedemptionDetail) }}</strong></span>
+                <span>精确到期<strong>{{ selectedRedemptionDetail.expires_at ? formatDateTime(selectedRedemptionDetail.expires_at) : '永久有效' }}</strong></span>
+                <span>单用户使用上限<strong>{{ selectedRedemptionDetail.per_user_max_times > 0 ? `每人最多 ${selectedRedemptionDetail.per_user_max_times} 次` : '不限制' }}</strong></span>
+                <span>使用状态<strong>{{ redemptionStatusLabel(selectedRedemptionDetail.status) }}</strong></span>
+                <span>累计可兑金额<strong>¥{{ Number(selectedRedemptionDetail.total_amount || 0).toFixed(2) }}</strong></span>
+              </div>
+
+              <h3 class="redemption-drawer-subtitle">已兑换用户</h3>
+              <div v-if="redemptionDetailLoading" class="empty-preview compact-empty">加载中...</div>
+              <div v-else-if="redemptionLogs.length === 0" class="empty-preview compact-empty">暂无兑换记录</div>
+              <div v-else class="redemption-log-list">
+                <article v-for="log in redemptionLogs" :key="log.id" class="order-file-row">
+                  <div>
+                    <strong>{{ log.real_name || log.username || log.user_id || '未知用户' }}</strong>
+                    <span>{{ formatDateTime(log.created_at) }}</span>
+                  </div>
+                  <strong>¥{{ Number(log.amount).toFixed(2) }}</strong>
+                </article>
+              </div>
+
+              <div class="form-actions">
+                <button type="button" class="primary-btn" @click="closeRedemptionDetail">关闭</button>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </template>
     </div>
   </section>
 </template>
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { Archive, CheckCircle, ClipboardList, CreditCard, DatabaseBackup, Download, ExternalLink, Eye, Globe, Gauge, MapPin, Pencil, Plus, Power, Printer, RefreshCw, RotateCcw, Save, Search, Settings, Trash2, UploadCloud, UserCog, XCircle } from 'lucide-vue-next'
+import { Archive, CheckCircle, ClipboardList, Copy, CreditCard, DatabaseBackup, Download, ExternalLink, Eye, Globe, Gauge, MapPin, MoreHorizontal, Pencil, Plus, Power, Printer, RefreshCw, RotateCcw, Save, Search, Settings, Ticket, Trash2, UploadCloud, UserCog, XCircle } from 'lucide-vue-next'
 import { buildApiUrl, request } from '../api/client'
+import DailyStatsCard from '../components/DailyStatsCard.vue'
 import { useAuthStore } from '../stores/auth'
 
 const auth = useAuthStore()
@@ -634,10 +949,26 @@ const tabs = [
   { key: 'users', label: '用户', icon: UserCog },
   { key: 'settings', label: '配置', icon: Settings },
   { key: 'payment', label: '支付', icon: CreditCard },
+  { key: 'redemptions', label: '兑换码', icon: Ticket },
   { key: 'backups', label: '备份', icon: DatabaseBackup },
   { key: 'printers', label: '打印机', icon: Printer }
 ]
 const tab = ref('dashboard')
+// 手机端底部 Tab 栏：后台共 8 个 tab，窄屏底部放不下，因此常用 tab 常驻、其余收进「更多」面板。
+// 桌面端不受影响，仍由 .admin-menu 展示全部 tab；两端共用同一个 tab 状态与 loadTab()，
+// 所以切换行为与点击 .admin-menu 按钮完全一致（只改 tab ref，不涉及路由跳转）。
+const MOBILE_PRIMARY_TAB_KEYS = ['dashboard', 'orders', 'users', 'settings']
+const moreOpen = ref(false)
+const primaryTabs = computed(() => tabs.filter((item) => MOBILE_PRIMARY_TAB_KEYS.includes(item.key)))
+const moreTabs = computed(() => tabs.filter((item) => !MOBILE_PRIMARY_TAB_KEYS.includes(item.key)))
+const moreCurrent = computed(() => moreTabs.value.find((item) => item.key === tab.value) || null)
+const moreActive = computed(() => moreOpen.value || Boolean(moreCurrent.value))
+
+function selectTab(key) {
+  tab.value = key
+  moreOpen.value = false
+}
+
 const dashboard = ref(null)
 const orders = ref([])
 const printQueue = ref({ total: 0, printing_count: 0, waiting_count: 0, items: [] })
@@ -666,6 +997,56 @@ const restoreBusy = ref(false)
 const restoreDragging = ref(false)
 const restoreFile = ref(null)
 const restoreInfo = ref(null)
+// 兑换码管理
+const redemptions = ref([])
+const redemptionsTotal = ref(0)
+const redemptionsHasMore = ref(false)
+const redemptionLoadingMore = ref(false)
+const redemptionSearch = ref('')
+const showAddRedemptionModal = ref(false)
+const showBatchRedemptionModal = ref(false)
+const redemptionSaving = ref(false)
+const batchRefreshing = ref(false)
+// per_user_limit_enabled = 弹窗开关；per_user_max_times = 开关旁的数字输入框（正整数）。
+// 【新增功能】expiry_mode = 有效期方式（'days' 按天数 / 'date' 指定到期日期，二选一）；
+// expire_date = 日期控件值（原生 YYYY-MM-DD），仅在 'date' 模式提交给后端。
+const redemptionForm = ref({ code: '', amount: null, usable_count: 1, valid_days: 0, expiry_mode: 'days', expire_date: '', per_user_limit_enabled: false, per_user_max_times: 1 })
+// 分组底部那行小字里的 N：开关关闭时显示占位 N（不限制），开启时显示实际填写的最大次数。
+// 纯展示计算，不参与校验与提交（提交仍由 saveAddRedemption() 决定，开关关闭发 0）。
+const perUserMaxTimesHint = computed(() => {
+  if (!redemptionForm.value.per_user_limit_enabled) return 'N'
+  const times = Math.floor(Number(redemptionForm.value.per_user_max_times))
+  return Number.isFinite(times) && times >= 1 ? String(times) : 'N'
+})
+const batchRedemptionForm = ref({ count: 10, amount: null, usable_count: 1, valid_days: 0, expiry_mode: 'days', expire_date: '' })
+// 【新增功能】有效期提示行（两个弹窗共用一套文案）：日期模式显示到期时刻，天数模式说明 0=永久。
+function redemptionExpiryHintOf(form) {
+  if (form.expiry_mode === 'date') {
+    return form.expire_date ? `到期时间：${form.expire_date} 23:59:59` : '请选择到期日期'
+  }
+  const days = Math.floor(Number(form.valid_days || 0))
+  return days > 0 ? `自创建起 ${days} 天后到期` : '填 0 表示永久有效'
+}
+const redemptionExpiryHint = computed(() => redemptionExpiryHintOf(redemptionForm.value))
+const batchRedemptionExpiryHint = computed(() => redemptionExpiryHintOf(batchRedemptionForm.value))
+// 列表「有效期」列：指定到期日期只显示到期时刻；按天数额外标明天数（永久有效两者一致）。
+function redemptionExpiryText(code) {
+  if (!code.expires_at) return '永久有效'
+  const deadline = `截止 ${formatDateTime(code.expires_at)}`
+  if (code.expiry_mode === 'date') return deadline
+  const days = Math.floor(Number(code.valid_days || 0))
+  return days > 0 ? `${days} 天 · ${deadline}` : deadline
+}
+// 详情抽屉「有效天数」：指定到期日期模式下天数无意义（后端已写 0），显示占位符避免误读为永久有效。
+function redemptionDetailValidDays(code) {
+  if (code.expiry_mode === 'date') return '—（按到期日期）'
+  const days = Number(code.valid_days || 0)
+  return days > 0 ? `${days} 天` : '永久有效'
+}
+const batchResult = ref([])
+const selectedRedemptionDetail = ref(null)
+const redemptionDetailLoading = ref(false)
+const redemptionLogs = ref([])
 const showAddPrinterModal = ref(false)
 const feedback = ref('')
 const feedbackType = ref('success')
@@ -690,7 +1071,7 @@ const settingLabels = {
   cups_user: 'CUPS 用户名',
   cups_password: 'CUPS 密码'
 }
-const emptyPrinter = { editingName: '', name: '', uri: '', driver: 'everywhere', location: '', description: '', is_default: false, is_enabled: true, accepting_jobs: true }
+const emptyPrinter = { editingName: '', name: '', uri: '', driver: 'everywhere', location: '', description: '', is_default: false, is_enabled: true, accepting_jobs: true, is_support_color: false, is_support_auto_duplex: true }
 const printerForm = ref({ ...emptyPrinter })
 const emptyUser = { id: '', username: '', password: '', email: '', phone: '', balance: 0, is_admin: false, is_active: true }
 const userForm = ref({ ...emptyUser })
@@ -733,9 +1114,197 @@ async function loadTab() {
     backups.value = result.backups || []
     backupPolicy.value = { ...backupPolicy.value, ...(result.policy || {}) }
   }
+  if (tab.value === 'redemptions') {
+    await loadRedemptions()
+  }
   if (tab.value === 'printers') {
     await loadPrinterPanel()
   }
+}
+
+// 兑换码管理：首次加载（重置搜索与分页）。
+async function loadRedemptions() {
+  const params = new URLSearchParams({ limit: 20, offset: 0 })
+  if (redemptionSearch.value) params.set('search', redemptionSearch.value)
+  const data = await request(`/api/admin/redemptions?${params.toString()}`)
+  redemptions.value = data.items || []
+  redemptionsTotal.value = data.total || 0
+  redemptionsHasMore.value = Boolean(data.has_more)
+  redemptionLoadingMore.value = false
+}
+
+async function loadMoreRedemptions() {
+  if (redemptionLoadingMore.value || !redemptionsHasMore.value) return
+  redemptionLoadingMore.value = true
+  try {
+    const params = new URLSearchParams({ limit: 20, offset: redemptions.value.length })
+    if (redemptionSearch.value) params.set('search', redemptionSearch.value)
+    const data = await request(`/api/admin/redemptions?${params.toString()}`)
+    const newItems = data.items || []
+    const existingIds = new Set(redemptions.value.map((code) => code.id))
+    redemptions.value = [...redemptions.value, ...newItems.filter((code) => !existingIds.has(code.id))]
+    redemptionsTotal.value = data.total || 0
+    redemptionsHasMore.value = Boolean(data.has_more)
+  } finally {
+    redemptionLoadingMore.value = false
+  }
+}
+
+function openAddRedemption() {
+  redemptionForm.value = { code: '', amount: null, usable_count: 1, valid_days: 0, expiry_mode: 'days', expire_date: '', per_user_limit_enabled: false, per_user_max_times: 1 }
+  showAddRedemptionModal.value = true
+}
+
+function closeAddRedemptionModal() {
+  showAddRedemptionModal.value = false
+}
+
+async function saveAddRedemption() {
+  const amount = Number(redemptionForm.value.amount)
+  const usable = Number(redemptionForm.value.usable_count || 1)
+  const validDays = Number(redemptionForm.value.valid_days || 0)
+  if (!Number.isFinite(amount) || amount <= 0) {
+    showFeedback('请填写有效的兑换面额', 'warning')
+    return
+  }
+  // 【新增功能】有效期两种互斥方式：日期模式必须选中日期，天数模式沿用原 0=永久逻辑。
+  const expiryMode = redemptionForm.value.expiry_mode === 'date' ? 'date' : 'days'
+  const expireDate = (redemptionForm.value.expire_date || '').trim()
+  if (expiryMode === 'date' && !expireDate) {
+    showFeedback('请选择到期日期', 'warning')
+    return
+  }
+  // 【新增功能】每个用户最大兑换次数：开关关闭时提交 0（后端=关闭该限制，保持原有总次数逻辑）；
+  // 开启时必须填正整数，否则拒绝提交，避免出现「开关打开但上限为 0」的歧义状态。
+  const perUserLimitEnabled = Boolean(redemptionForm.value.per_user_limit_enabled)
+  const perUserMaxTimes = Math.floor(Number(redemptionForm.value.per_user_max_times))
+  if (perUserLimitEnabled && (!Number.isFinite(perUserMaxTimes) || perUserMaxTimes < 1)) {
+    showFeedback('请输入每个用户最大兑换次数（正整数）', 'warning')
+    return
+  }
+  redemptionSaving.value = true
+  try {
+    const payload = {
+      // 兑换码允许留空：留空传空串，由后端自动生成随机兑换码（与弹窗提示一致）。
+      code: redemptionForm.value.code || '',
+      amount: Math.round(amount * 100) / 100,
+      usable_count: Math.max(1, Math.floor(usable)),
+      expiry_mode: expiryMode,
+      // 日期模式提交 YYYY-MM-DD（后端归一化为当天 23:59:59）；天数模式置空，避免歧义。
+      expire_date: expiryMode === 'date' ? expireDate : null,
+      valid_days: expiryMode === 'date' ? 0 : Math.max(0, Math.floor(validDays)),
+      per_user_max_times: perUserLimitEnabled ? perUserMaxTimes : 0
+    }
+    await request('/api/admin/redemptions', { method: 'POST', body: payload })
+    closeAddRedemptionModal()
+    showFeedback('兑换码已创建')
+    await loadRedemptions()
+  } catch (error) {
+    showFeedback(error.message || '创建兑换码失败', 'warning')
+  } finally {
+    redemptionSaving.value = false
+  }
+}
+
+function openBatchRedemption() {
+  batchRedemptionForm.value = { count: 10, amount: null, usable_count: 1, valid_days: 0, expiry_mode: 'days', expire_date: '' }
+  batchResult.value = []
+  showBatchRedemptionModal.value = true
+}
+
+function closeBatchRedemptionModal() {
+  showBatchRedemptionModal.value = false
+}
+
+async function saveBatchRedemption() {
+  const count = Number(batchRedemptionForm.value.count || 10)
+  const amount = Number(batchRedemptionForm.value.amount)
+  const usable = Number(batchRedemptionForm.value.usable_count || 1)
+  const validDays = Number(batchRedemptionForm.value.valid_days || 0)
+  if (!Number.isFinite(amount) || amount <= 0) {
+    showFeedback('请填写有效的单张面额', 'warning')
+    return
+  }
+  // 【新增功能】批量生成的有效期同样二选一，校验与手动新增保持一致。
+  const expiryMode = batchRedemptionForm.value.expiry_mode === 'date' ? 'date' : 'days'
+  const expireDate = (batchRedemptionForm.value.expire_date || '').trim()
+  if (expiryMode === 'date' && !expireDate) {
+    showFeedback('请选择到期日期', 'warning')
+    return
+  }
+  batchRefreshing.value = true
+  try {
+    const payload = {
+      count: Math.min(1000, Math.max(1, Math.floor(count))),
+      amount: Math.round(amount * 100) / 100,
+      usable_count: Math.max(1, Math.floor(usable)),
+      expiry_mode: expiryMode,
+      expire_date: expiryMode === 'date' ? expireDate : null,
+      valid_days: expiryMode === 'date' ? 0 : Math.max(0, Math.floor(validDays))
+    }
+    const data = await request('/api/admin/redemptions/batch', { method: 'POST', body: payload })
+    batchResult.value = data.codes || []
+  } catch (error) {
+    showFeedback(error.message || '批量生成失败', 'warning')
+  } finally {
+    batchRefreshing.value = false
+  }
+}
+
+async function copyBatchResult() {
+  const text = batchResult.value.map((item) => item.code).join('\n')
+  try {
+    await navigator.clipboard.writeText(text)
+    showFeedback('兑换码已复制到剪贴板')
+  } catch {
+    // 剪贴板 API 被禁用时回退到临时 textarea 选中复制。
+    const ta = document.createElement('textarea')
+    ta.value = text
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+  }
+}
+
+// 打开「详情」二级界面：先展示列表项已有的全部字段，再异步补齐该兑换码的已兑换用户列表。
+async function openRedemptionDetail(code) {
+  selectedRedemptionDetail.value = code
+  redemptionLogs.value = []
+  redemptionDetailLoading.value = true
+  try {
+    const data = await request(`/api/admin/redemptions/${code.id}/logs`)
+    redemptionLogs.value = data.logs || []
+  } catch (error) {
+    showFeedback(error.message || '加载兑换记录失败', 'warning')
+  } finally {
+    redemptionDetailLoading.value = false
+  }
+}
+
+function closeRedemptionDetail() {
+  selectedRedemptionDetail.value = null
+  redemptionDetailLoading.value = false
+  redemptionLogs.value = []
+}
+
+async function deleteRedemption(code) {
+  if (!confirm(`确定删除兑换码 ${code.code} 吗？删除后不可恢复。`)) return
+  try {
+    await request(`/api/admin/redemptions/${code.id}`, { method: 'DELETE' })
+    showFeedback('兑换码已删除')
+    await loadRedemptions()
+  } catch (error) {
+    showFeedback(error.message || '删除兑换码失败', 'warning')
+  }
+}
+
+function redemptionStatusLabel(status) {
+  return { unused: '未使用', used: '已使用', expired: '已过期' }[status] || status || '未知'
+}
+
+function redemptionStatusClass(status) {
+  return { unused: 'success', used: 'warning', expired: 'info' }[status] || 'info'
 }
 
 async function loadPrinterPanel() {
@@ -1349,8 +1918,17 @@ function fillPrinter(printer) {
     description: printer.description || '',
     is_default: Boolean(printer.is_default),
     is_enabled: Boolean(printer.is_enabled),
-    accepting_jobs: printer.accepting_jobs !== false
+    accepting_jobs: printer.accepting_jobs !== false,
+    // 【新增功能】回填彩色/自动双面能力（缺省时按「不支持彩色、支持双面」处理，与后端默认值一致）。
+    is_support_color: Boolean(printer.is_support_color),
+    is_support_auto_duplex: printer.is_support_auto_duplex !== false
   }
+}
+
+// 【新增功能】打开编辑弹窗：先把打印机详情回填到表单，再展示弹窗。
+function openPrinterEditor(printer) {
+  fillPrinter(printer)
+  showAddPrinterModal.value = true
 }
 
 async function viewPrinterInfo(printer) {
@@ -1374,7 +1952,10 @@ async function savePrinter() {
       description: printerForm.value.description,
       is_default: Boolean(printerForm.value.is_default),
       is_enabled: Boolean(printerForm.value.is_enabled),
-      accepting_jobs: Boolean(printerForm.value.accepting_jobs)
+      accepting_jobs: Boolean(printerForm.value.accepting_jobs),
+      // 【新增功能】彩色/自动双面能力随打印机一起保存。
+      is_support_color: Boolean(printerForm.value.is_support_color),
+      is_support_auto_duplex: Boolean(printerForm.value.is_support_auto_duplex)
     }
     if (printerForm.value.editingName) {
       await request(printerApiPath(printerForm.value.editingName), {
