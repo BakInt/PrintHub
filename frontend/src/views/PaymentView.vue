@@ -1,30 +1,56 @@
 <template>
-  <section class="payment-layout">
-    <div class="panel payment-card">
-      <p class="eyebrow">收银台</p>
-      <h1>订单支付与打印状态</h1>
-      <div v-if="order" class="status-stack">
-        <div class="status-line"><span>订单号</span><strong>{{ order.id }}</strong></div>
-        <div class="status-line"><span>金额</span><strong>¥{{ Number(order.total_amount).toFixed(2) }}</strong></div>
-        <div class="status-line"><span>状态</span><strong>{{ statusText[order.status] || order.status }}</strong></div>
-        <div v-if="queueMessage" class="notice info">{{ queueMessage }}</div>
-        <div v-if="order.print_error" class="notice warning">{{ order.print_error }}</div>
-      </div>
-      <div class="qr-placeholder">
-        <QrCode :size="76" />
-        <span>微信或支付宝订单创建后会跳转到配置的易支付网关</span>
-      </div>
-      <button class="secondary-btn" @click="loadOrder"><RefreshCw :size="18" />刷新状态</button>
-    </div>
+  <section class="mx-auto w-full max-w-md py-2">
+    <Card class="py-6">
+      <CardHeader class="grid gap-1.5">
+        <p class="text-[13px] font-bold tracking-widest text-primary">收银台</p>
+        <CardTitle class="font-display text-2xl tracking-tight">订单支付与打印状态</CardTitle>
+      </CardHeader>
+      <CardContent class="grid gap-4">
+        <div v-if="order" class="grid gap-2.5">
+          <div class="flex items-center justify-between gap-3 rounded-lg border bg-muted/50 px-3.5 py-2.5 text-sm">
+            <span class="text-muted-foreground">订单号</span>
+            <strong class="break-all text-foreground">{{ order.id }}</strong>
+          </div>
+          <div class="flex items-center justify-between gap-3 rounded-lg border bg-muted/50 px-3.5 py-2.5 text-sm">
+            <span class="text-muted-foreground">金额</span>
+            <strong class="font-display text-base text-primary tabular-nums">¥{{ Number(order.total_amount).toFixed(2) }}</strong>
+          </div>
+          <div class="flex items-center justify-between gap-3 rounded-lg border bg-muted/50 px-3.5 py-2.5 text-sm">
+            <span class="text-muted-foreground">状态</span>
+            <strong class="text-foreground">{{ statusText[order.status] || order.status }}</strong>
+          </div>
+          <Alert v-if="queueMessage" class="border-primary/25 bg-accent text-accent-foreground">
+            <Info class="size-4" />
+            <AlertDescription class="text-accent-foreground">{{ queueMessage }}</AlertDescription>
+          </Alert>
+          <Alert v-if="order.print_error" class="border-warning/30 bg-warning/10 text-warning">
+            <TriangleAlert class="size-4" />
+            <AlertDescription class="text-warning">{{ order.print_error }}</AlertDescription>
+          </Alert>
+        </div>
+        <div class="grid place-items-center gap-3 rounded-xl border border-dashed bg-muted/40 px-6 py-10 text-center text-muted-foreground">
+          <QrCode class="size-16 opacity-70" aria-hidden="true" />
+          <span class="max-w-64 text-[13px] leading-relaxed">微信或支付宝订单创建后会跳转到配置的易支付网关</span>
+        </div>
+        <Button variant="secondary" class="h-10" @click="loadOrder">
+          <RefreshCw />
+          刷新状态
+        </Button>
+      </CardContent>
+    </Card>
   </section>
 </template>
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { QrCode, RefreshCw } from 'lucide-vue-next'
-import { request } from '../api/client'
-import { formatQueueMessage } from '../utils/queue'
+import { Info, QrCode, RefreshCw, TriangleAlert } from 'lucide-vue-next'
+import { request } from '@/api/client'
+import { formatQueueMessage } from '@/utils/queue'
+
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
 const route = useRoute()
 const order = ref(null)

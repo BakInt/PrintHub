@@ -33,7 +33,12 @@ print(
     flush=True,
 )
 
-app = FastAPI(title=settings.app_name)
+# 安全修复（V-06）：/docs、/redoc、/openapi.json 会完整暴露全部 API 定义，
+# 只在开发环境开启，其它环境（含生产）一律禁用。
+if settings.environment.lower() == "development":
+    app = FastAPI(title=settings.app_name)
+else:
+    app = FastAPI(title=settings.app_name, docs_url=None, redoc_url=None, openapi_url=None)
 
 app.add_middleware(
     CORSMiddleware,

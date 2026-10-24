@@ -15,9 +15,11 @@ def calculate_page_coverages(pdf_path: Path) -> list[float]:
     coverages: list[float] = []
     for image in images:
         grayscale = image.convert("L")
-        pixels = grayscale.getdata()
+        # 【性能】"pixel < 128 记为深色"改用 C 实现的 histogram() 统计，替代逐像素
+        # Python 循环（页数多时上传耗时的大头），判定语义与旧实现完全一致。
+        histogram = grayscale.histogram()
+        dark = sum(histogram[:128])
         total = grayscale.width * grayscale.height
-        dark = sum(1 for pixel in pixels if pixel < 128)
         coverages.append(round((dark / total) * 100 if total else 0, 2))
     return coverages
 

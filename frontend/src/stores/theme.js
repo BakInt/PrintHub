@@ -4,11 +4,11 @@ import { defineStore } from 'pinia'
 // 主题（亮色 / 深色）状态管理。
 // - 用户手动切换过 → 读写 localStorage（键名沿用 cloud-print-* 前缀），刷新后保持。
 // - 用户没切换过 → 跟随操作系统 prefers-color-scheme，并监听系统变化实时跟随。
-// - PC 端与移动端共用同一份「用户选择」，但配色变量是两套（见 assets/theme.css）：
-//   移动端（≤767px）的主题变量在 media query 内独立定义，与 PC 端互不影响。
+// - 亮暗通过 <html> 上的 .dark 类切换（shadcn-vue CSS 变量主题，见 assets/index.css），
+//   index.html 的防闪烁内联脚本使用同一套规则。
 const STORAGE_KEY = 'cloud-print-theme'
 const DARK_QUERY = '(prefers-color-scheme: dark)'
-// 与 styles.css / theme.css 的手机端主断点保持一致，用于识别当前是 PC 还是移动端 UI。
+// 移动端 UI 断点（底部 Tab 栏 / 隐藏桌面导航），与 Tailwind md 断点保持一致。
 const MOBILE_QUERY = '(max-width: 767px)'
 
 function readSystemTheme() {
@@ -40,19 +40,17 @@ export const useThemeStore = defineStore('theme', () => {
   // 有效主题：用户显式选择优先，否则跟随系统
   const theme = computed(() => saved.value || systemTheme.value)
   const isDark = computed(() => theme.value === 'dark')
-  // 当前生效的是「移动端配色」还是「PC 端配色」（仅用于提示文案）
-  const deviceLabel = computed(() => (isMobile.value ? '移动端' : '电脑端'))
 
   function applyTheme(value) {
     if (typeof document === 'undefined') return
     const root = document.documentElement
-    root.dataset.theme = value
+    root.classList.toggle('dark', value === 'dark')
     root.style.colorScheme = value
     // 追加类名后颜色才有过渡动画；延后到下一帧再加，避免首屏加载时整体闪一下
     if (document.body) window.requestAnimationFrame(() => root.classList.add('theme-ready'))
   }
 
-  // 首屏与 index.html 内联脚本都已写过 data-theme，这里做一次兜底同步
+  // 首屏与 index.html 内联脚本都已写过 .dark 类，这里做一次兜底同步
   function sync() {
     applyTheme(theme.value)
   }
@@ -113,7 +111,6 @@ export const useThemeStore = defineStore('theme', () => {
     theme,
     isDark,
     isMobile,
-    deviceLabel,
     hasSavedTheme: computed(() => saved.value !== null),
     setTheme,
     toggleTheme,

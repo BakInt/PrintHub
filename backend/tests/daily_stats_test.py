@@ -214,7 +214,7 @@ def test_normalize_days():
 def test_timezone_label():
     print("\n[7] timezone_label 格式")
     label = timezone_label()
-    check("形如 UTC+08:00", len(label) == 9 and label.startswith("UTC") and label[4] in "+-" and label[7] == ":", f"-> {label}")
+    check("形如 UTC+08:00", len(label) == 9 and label.startswith("UTC") and label[3] in "+-" and label[6] == ":", f"-> {label}")
     check("daily_stats 回显 timezone", daily_stats(new_db(), 7)["timezone"] == label)
 
 

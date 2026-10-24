@@ -1,15 +1,25 @@
 <!doctype html>
-<html lang="zh-CN" data-theme="light">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="light dark" />
-    <title>云打印系统</title>
+    <meta name="description" content="PrintHub 云打印 —— 在线上传 PDF、Office 文档与图片，自动转换计价，在线支付后自动送印的自助云打印系统。" />
+    <meta name="theme-color" content="#1d4ed8" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0b1220" media="(prefers-color-scheme: dark)" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="PrintHub 云打印" />
+    <meta property="og:description" content="上传文件，在线支付，自动打印 —— 面向门店、园区与共享打印场景的自助云打印系统。" />
+    <title>PrintHub 云打印</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%231d4ed8'/%3E%3Crect x='19' y='13' width='26' height='11' rx='2' fill='%23ffffff' opacity='.92'/%3E%3Cpath d='M14 27h36a4 4 0 0 1 4 4v12a4 4 0 0 1-4 4h-6v9a2 2 0 0 1-2 2H22a2 2 0 0 1-2-2v-9h-6a4 4 0 0 1-4-4V31a4 4 0 0 1 4-4z' fill='%23ffffff'/%3E%3Ccircle cx='46' cy='33' r='2.5' fill='%231d4ed8'/%3E%3Crect x='24' y='42' width='16' height='11' rx='1.5' fill='%23c3d7f8'/%3E%3C/svg%3E"
+    />
     <script>
       // 首屏主题判定：必须在样式生效前执行，避免「先亮后暗」的闪烁。
       // 规则与 src/stores/theme.js 完全一致：localStorage 有记录用记录，否则跟随系统。
-      // 配色变量分两套：PC 端与移动端（≤767px）各自定义，见 src/assets/theme.css。
-      (function () {
+      // 亮/暗通过 <html> 上的 .dark 类切换（shadcn-vue CSS 变量主题方案）。
+      ;(function () {
         var theme = null
         try {
           theme = window.localStorage.getItem('cloud-print-theme')
@@ -19,7 +29,7 @@
         if (theme !== 'light' && theme !== 'dark') {
           theme = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
         }
-        document.documentElement.dataset.theme = theme
+        document.documentElement.classList.toggle('dark', theme === 'dark')
         document.documentElement.style.colorScheme = theme
       })()
     </script>

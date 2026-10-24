@@ -326,34 +326,57 @@ def calculate_price_detail(db: sqlite3.Connection, page_count: int, copies: int,
     )
 
 
-def resolve_file_double_sided(file_row: sqlite3.Row, double_sided) -> bool:
-    """解析单份文档的双面设置：接受布尔（作用于所有文件）或 {file_id: bool} 映射。
+def merged_total_pages(files: list[sqlite3.Row]) -> int:
+    """合并双面打印流的总页数（本次订单全部文档的页数之和）。"""
+    return sum(int(file_row["page_count"] or 0) for file_row in files)
 
-    单页文档强制单面：双面对单页无意义，不会把两份单页合并到同一张纸。
+
+def _merged_duplex_base_amount(
+    db: sqlite3.Connection,
+    files: list[sqlite3.Row],
+    copies: int,
+    pricing_mode: str,
+) -> float:
+    """合并双面的基础金额。
+
+    标准模式：把全部文档视为一个整体，按 ceil(总页数/2) 张、双面单价计费；
+    覆盖率模式：仍逐页按覆盖率分档计价（合并不改变每页单价），整单使用双面基础价。
     """
-    if isinstance(double_sided, dict):
-        requested = bool(double_sided.get(file_row["id"], False))
-    else:
-        requested = bool(double_sided)
-    if int(file_row["page_count"] or 0) < 2:
-        return False
-    return requested
+    if pricing_mode == COVERAGE_TIERED_PRICING_MODE:
+        return calculate_coverage_tiered_price(db, files, copies, True)
+    return calculate_price(db, merged_total_pages(files), copies, True)
 
 
-def calculate_files_price_detail(db: sqlite3.Connection, files: list[sqlite3.Row], copies: int, double_sided) -> dict:
-    """逐份文档计价：每份文档按自身页数与自身单/双面独立折算张数与金额后求和。
+def calculate_files_price_detail(
+    db: sqlite3.Connection,
+    files: list[sqlite3.Row],
+    copies: int,
+    merge_duplex: bool = False,
+) -> dict:
+    """多文档计价。
 
-    ``double_sided`` 可为布尔（对所有文件生效）或 {file_id: bool} 的按份映射。
+    ``merge_duplex=False``：全部文档按单面逐页计价后求和。
+    ``True``（合并双面打印）：所有文档按顺序合并为一个双面打印流——不同文档的
+    页面连续排到纸张正反面（两份单页文档可打在同一张纸的正反两面），
+    张数按 ceil(总页数/2) 折算、单价用双面价。
     """
     pricing_mode = get_pricing_mode(db)
-    base_amount = 0.0
-    sheet_count = 0
-    for file_row in files:
-        file_duplex = resolve_file_double_sided(file_row, double_sided)
-        base_amount += calculate_file_base_amount(db, file_row, copies, file_duplex, pricing_mode)
-        sheet_count += calculate_sheet_count(int(file_row["page_count"] or 0), copies, file_duplex)
+    copy_count = max(int(copies or 1), 1)
+    total_pages = merged_total_pages(files)
+    if merge_duplex:
+        base_amount = _merged_duplex_base_amount(db, files, copy_count, pricing_mode)
+        sheet_count = math.ceil(total_pages / 2) * copy_count
+    else:
+        base_amount = sum(
+            calculate_file_base_amount(db, file_row, copy_count, False, pricing_mode)
+            for file_row in files
+        )
+        sheet_count = sum(
+            calculate_sheet_count(int(file_row["page_count"] or 0), copy_count, False)
+            for file_row in files
+        )
     base_amount = round(base_amount, 2)
-    return _price_detail(
+    detail = _price_detail(
         base_amount,
         sheet_count,
         pricing_mode,
@@ -362,7 +385,10 @@ def calculate_files_price_detail(db: sqlite3.Connection, files: list[sqlite3.Row
             daily_limited_offer_discount(db, sheet_count),
         ],
     )
+    detail["merge_duplex"] = bool(merge_duplex)
+    detail["total_pages"] = total_pages
+    return detail
 
 
-def calculate_files_price(db: sqlite3.Connection, files: list[sqlite3.Row], copies: int, double_sided) -> float:
-    return calculate_files_price_detail(db, files, copies, double_sided)["amount"]
+def calculate_files_price(db: sqlite3.Connection, files: list[sqlite3.Row], copies: int, merge_duplex: bool = False) -> float:
+    return calculate_files_price_detail(db, files, copies, merge_duplex)["amount"]

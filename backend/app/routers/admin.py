@@ -10,13 +10,14 @@ from fastapi.responses import FileResponse
 
 from ..config import get_settings as get_app_settings
 from ..database import get_db
-from ..models.schemas import AdminRedemptionBatchCreate, AdminRedemptionCreate, AdminUserCreate, AdminUserUpdate, BackupCreateRequest, BackupPolicyUpdate, BalanceSet, BalanceUpdate, FileCacheCleanupRequest, PaymentSettingsUpdate, PaymentTestRequest, PrinterEnabledUpdate, PrinterTestPageRequest, PrinterTestResult, PrinterUpdate, PrinterUriProbe, SettingsUpdate
+from ..models.schemas import AdminRedemptionBatchCreate, AdminRedemptionCreate, AdminUserCreate, AdminUserUpdate, BackupCreateRequest, BackupPolicyUpdate, BalanceSet, BalanceUpdate, FileCacheCleanupRequest, PaymentSettingsUpdate, PaymentTestRequest, PrinterEnabledUpdate, PrinterTestPageRequest, PrinterTestResult, PrinterUpdate, PrinterUriProbe, SettingsUpdate, SiteSettingsUpdate
 from ..services.backup import backup_file_path, backup_policy, create_backup, delete_backup, inspect_initial_restore, inspect_uploaded_backup, is_initial_restore_available, list_backups, restore_initial_backup, restore_uploaded_backup, update_backup_policy
 from ..services.epay import build_success_notify_payload, complete_epay_payment, create_epay_request, get_payment_settings, validate_payment_settings
 from ..services.cups_printer import get_printer as get_cups_printer, clear_default_printer, import_ppd_driver, list_printer_drivers, list_printer_jobs, list_printers, normalize_printer_uri, printer_system, probe_printer_uri, record_printer_test_result, remove_printer, set_default_printer, set_printer_enabled, test_printer, update_printer
 from ..services.print_monitor import check_printing_orders
 from ..services.queue import queue_overview
 from ..services.redemption import batch_generate_codes, create_code, delete_code, list_code_logs, list_codes
+from ..services.site_settings import admin_site_settings, save_site_settings, save_uploaded_favicon
 # 必须用别名引入：下面的路由函数同名会覆盖模块级名字，导致路由调用自己。
 from ..services.stats import daily_stats as build_daily_stats
 from ..utils.security import hash_password
@@ -396,7 +397,12 @@ def remove_backup(filename: str, _admin=Depends(admin_user)):
 
 @setup_router.get("/restore/status")
 def setup_restore_status():
-    return {"available": is_initial_restore_available()}
+    # 安全修复（V-01）：该接口无鉴权，不能向匿名访客泄露系统是否已初始化。
+    # 仅在「全新未初始化」时返回 available=true（登录页的首次部署恢复流程需要）；
+    # 系统已有数据时一律 401，初始化状态改由管理员后台备份页确认。
+    if not is_initial_restore_available():
+        raise HTTPException(status_code=401, detail="请先登录管理员账号")
+    return {"available": True}
 
 
 @setup_router.post("/restore/inspect")
@@ -484,14 +490,17 @@ def edit_user(user_id: str, payload: AdminUserUpdate, db: sqlite3.Connection = D
         password_hash = hash_password(data["password"])
     if not data:
         return {"success": True}
+    # 安全修复（V-05）：改密或封禁时吊销该用户已签发的全部 bearer token。
+    bump_token_version = bool(data.get("password")) or data.get("is_active") is False
     try:
         db.execute(
             """
             UPDATE users
-            SET username = ?, email = ?, phone = ?, is_admin = ?, is_active = ?, password_hash = ?
+            SET username = ?, email = ?, phone = ?, is_admin = ?, is_active = ?, password_hash = ?,
+                token_version = token_version + ?
             WHERE id = ?
             """,
-            (username, email, phone, is_admin, is_active, password_hash, user_id),
+            (username, email, phone, is_admin, is_active, password_hash, 1 if bump_token_version else 0, user_id),
         )
         db.commit()
     except sqlite3.IntegrityError as exc:
@@ -527,7 +536,12 @@ def toggle_user(user_id: str, db: sqlite3.Connection = Depends(get_db), _admin=D
         raise HTTPException(status_code=404, detail="用户不存在")
     if bool(user["is_active"]) and bool(user["is_admin"]) and _active_admin_count(db) <= 1:
         raise HTTPException(status_code=422, detail="至少保留一个可用管理员")
-    db.execute("UPDATE users SET is_active = ? WHERE id = ?", (0 if user["is_active"] else 1, user_id))
+    deactivating = bool(user["is_active"])
+    # 安全修复（V-05）：封禁同时吊销该用户的全部 bearer token。
+    db.execute(
+        "UPDATE users SET is_active = ?, token_version = token_version + ? WHERE id = ?",
+        (0 if user["is_active"] else 1, 1 if deactivating else 0, user_id),
+    )
     db.commit()
     return {"success": True}
 
@@ -794,6 +808,28 @@ def update_payment_settings(payload: PaymentSettingsUpdate, db: sqlite3.Connecti
         db.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, str(value)))
     db.commit()
     return {"success": True, "notices": _config_seeded_setting_notices(data)}
+
+
+@router.get("/site-settings")
+def get_site_settings(db: sqlite3.Connection = Depends(get_db), _admin=Depends(admin_user)):
+    """后台「站点设置」回显：标题/图标/备案号/登录锁定策略（含图标模式与外链原值）。"""
+    return admin_site_settings(db)
+
+
+@router.put("/site-settings")
+def update_site_settings(payload: SiteSettingsUpdate, db: sqlite3.Connection = Depends(get_db), _admin=Depends(admin_user)):
+    """保存站点设置：只更新传入的键，保存后立即生效（登录锁定下一笔登录请求即用新值）。"""
+    data = payload.model_dump(exclude_none=True)
+    settings = save_site_settings(db, data)
+    return {"success": True, "settings": settings}
+
+
+@router.post("/site-settings/favicon")
+def upload_site_favicon(file: UploadFile = File(...), db: sqlite3.Connection = Depends(get_db), _admin=Depends(admin_user)):
+    """上传站点图标（.ico/.png ≤200KB）：以 data URI 入库并立即切换为 upload 模式。"""
+    content = file.file.read()
+    settings = save_uploaded_favicon(db, file.filename or "", content)
+    return {"success": True, "settings": settings}
 
 
 @router.post("/payment-test")

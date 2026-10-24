@@ -6,6 +6,9 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 PHONE_PATTERN = re.compile(r"^1[3-9]\d{9}$")
 USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_]{4,20}$")
+# 安全修复（V-09）：自由文本姓名字段的输入白名单——中文、字母、数字、间隔号、
+# 空格。拒绝 < > " ' 等标签/属性字符，杜绝存储型 XSS 依赖前端转义兜底的隐患。
+NAME_PATTERN = re.compile(r"^[\u4e00-\u9fa5A-Za-z0-9·.\s]{1,40}$")
 
 
 def normalize_payment_method_value(value: str) -> str:
@@ -63,6 +66,8 @@ class UserProfileUpdate(BaseModel):
         name = value.strip()
         if not name:
             raise ValueError("请填写姓名")
+        if not NAME_PATTERN.fullmatch(name):
+            raise ValueError("姓名包含非法字符")
         return name
 
     @field_validator("phone", mode="before")
@@ -76,20 +81,7 @@ class UserProfileUpdate(BaseModel):
         return phone
 
 
-class FilePrintSetting(BaseModel):
-    """单份文档的独立打印设置：目前仅包含是否启用双面。
-
-    双面按份独立生效：为某份多页文档单独开启双面，只影响这一份文档自身的正反面，
-    不会与其它文档合并到同一张纸。
-    """
-
-    file_id: str
-    double_sided: bool = False
-
-
 class PrintSettings(BaseModel):
-    double_sided: bool = False
-    file_settings: list[FilePrintSetting] | None = None
     copies: int = Field(default=1, ge=1, le=99)
     printer_name: str | None = None
     contact_name: str | None = Field(default=None, max_length=40)
@@ -97,20 +89,9 @@ class PrintSettings(BaseModel):
     # 【新增功能】彩色打印开关：True=彩色（后端不得把文件转黑白），False=黑白。
     # 为 None 表示旧版前端没有携带该字段，后端完全按原有逻辑处理（兼容旧业务）。
     use_color: bool | None = None
-    # 【新增功能】自动双面打印总开关，与前端「双面打印」选项同源。
-    # 为 None 时沿用原有逻辑（全局 double_sided + 逐份 file_settings）；
-    # 非 None 时作为「未单独设置的文件」的全局默认值（逐份 file_settings 仍然优先）。
-    use_auto_duplex: bool | None = None
-
-    def double_sided_map(self) -> dict[str, bool]:
-        """把按份设置折算成 {file_id: bool} 映射。
-
-        缺省时回退到全局 ``double_sided``（历史兼容），
-        因此未在 ``file_settings`` 中出现的文件沿用全局开关。
-        """
-        if not self.file_settings:
-            return {}
-        return {item.file_id: item.double_sided for item in self.file_settings}
+    # 【新增功能】合并双面打印：True 时把本次订单的全部文档按上传顺序合并为一个
+    # 双面打印流，不同文档的页面连续排到纸张正反面（两份单页文档可打在同一张纸正反面）。
+    merge_duplex: bool = False
 
     @field_validator("contact_name", mode="before")
     @classmethod
@@ -122,6 +103,8 @@ class PrintSettings(BaseModel):
         name = value.strip()
         if not name:
             raise ValueError("请填写打印人姓名")
+        if not NAME_PATTERN.fullmatch(name):
+            raise ValueError("姓名包含非法字符")
         return name
 
     @field_validator("contact_phone", mode="before")
@@ -459,6 +442,21 @@ class PrinterUpdate(BaseModel):
 class PrinterEnabledUpdate(BaseModel):
     enabled: bool = True
     accepting_jobs: bool = True
+
+
+class SiteSettingsUpdate(BaseModel):
+    """站点设置（后台「站点设置」页）：全部字段可选，只更新请求里出现的键。
+
+    `site_favicon_mode` 取 none/url/upload；upload 只能由图标上传接口写入，
+    PUT 传 upload 会被服务层拒绝（避免「选了上传但没有图标数据」的悬空状态）。
+    """
+
+    site_title: str | None = Field(default=None, max_length=80)
+    site_favicon_mode: str | None = Field(default=None, pattern="^(none|url|upload)$")
+    site_favicon_url: str | None = Field(default=None, max_length=2048)
+    site_icp_number: str | None = Field(default=None, max_length=60)
+    login_lock_threshold: int | None = Field(default=None, ge=1, le=100)
+    login_lock_minutes: int | None = Field(default=None, ge=1, le=1440)
 
 
 class PrinterUriProbe(BaseModel):

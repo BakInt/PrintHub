@@ -1,0 +1,250 @@
+/* ============================================================================
+ * PrintHub 全局样式（Tailwind CSS v4 + shadcn-vue 主题变量）
+ * ----------------------------------------------------------------------------
+ * 约定（与 doc/UI_ADAPTATION.md 配套）：
+ * 1. 本文件是唯一的全局样式入口：Tailwind 指令 + shadcn-vue CSS 变量主题 +
+ *    品牌字体声明。组件外观一律来自 src/components/ui/*（shadcn-vue 官方组件），
+ *    页面只用 Tailwind 工具类定制，不再手写组件级 CSS。
+ * 2. 亮/暗主题由 <html class="dark"> 切换（见 src/stores/theme.js 与
+ *    index.html 防闪烁内联脚本），所有颜色走下方 CSS 变量，禁止在页面里写死色值。
+ * 3. 图表颜色使用 --chart-1..5，跟随主题；--success/--warning 为语义状态色，
+ *    供 Alert/Badge 等组合使用（tailwind: text-success / bg-warning/10 等）。
+ * 4. 圆角阶梯：--radius-sm(8) 控件 / md(10) 输入按钮 / lg(12) 卡片 / xl(16) 大容器。
+ * ========================================================================= */
+@import "tailwindcss";
+@import "tw-animate-css";
+/* shadcn-vue 官方基础层：data-* 变体、scroll-fade、no-scrollbar 等工具类
+   （生成组件的 cva 里大量使用 data-active/data-open 等变体，必须引入） */
+@import "shadcn-vue/tailwind.css";
+
+/* 暗色变体：跟随 html 元素上的 .dark 类（而非系统 media query） */
+@custom-variant dark (&:is(.dark *));
+
+/* 品牌字体：自托管 Space Grotesk（仅拉丁字符与数字），中文自动回退系统 CJK 字体 */
+@font-face {
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url("./fonts/space-grotesk-latin.woff2") format("woff2");
+}
+
+/* ---------------------------------------------------------------------------
+ * 1. 亮色主题（默认）
+ * ------------------------------------------------------------------------- */
+:root {
+  color-scheme: light;
+  --radius: 0.75rem;
+  --radius-sm: 0.5rem;
+  --radius-md: 0.625rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+
+  --background: #f5f7fb;
+  --foreground: #1c2a44;
+  --card: #ffffff;
+  --card-foreground: #1c2a44;
+  --popover: #ffffff;
+  --popover-foreground: #1c2a44;
+
+  /* 品牌色：深墨蓝（沿用旧版桌面端），按钮/链接/强调统一用这一族 */
+  --primary: #1d4ed8;
+  --primary-foreground: #ffffff;
+  --secondary: #eef2f8;
+  --secondary-foreground: #1e3a8a;
+  --muted: #f1f5fa;
+  --muted-foreground: #61708a;
+  --accent: #eef4ff;
+  --accent-foreground: #1e40af;
+  --destructive: #d92d20;
+  --success: #15803d;
+  --warning: #b45309;
+
+  --border: #e4e9f2;
+  --input: #c6d0df;
+  --ring: #1d4ed8;
+
+  /* 图表系列色：柱状(蓝) / 折线(琥珀) / 青 / 绿 / 紫，暗色下各自提亮 */
+  --chart-1: #1d4ed8;
+  --chart-2: #f59e0b;
+  --chart-3: #0891b2;
+  --chart-4: #16a34a;
+  --chart-5: #a855f7;
+
+  /* 后台侧边栏 */
+  --sidebar: #ffffff;
+  --sidebar-foreground: #45536b;
+  --sidebar-primary: #1d4ed8;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #eef4ff;
+  --sidebar-accent-foreground: #1e40af;
+  --sidebar-border: #e4e9f2;
+  --sidebar-ring: #1d4ed8;
+
+  /* 品牌渐变端点与页面顶部色晕（body 背景晕染引用 --brand-soft） */
+  --brand-deep: #1e40af;
+  --brand-soft: #eef4ff;
+  --brand-hi: #60a5fa;
+}
+
+/* ---------------------------------------------------------------------------
+ * 2. 暗色主题（<html class="dark">）
+ * ------------------------------------------------------------------------- */
+.dark {
+  color-scheme: dark;
+  --background: #0b1220;
+  --foreground: #dfe6f2;
+  --card: #121b2e;
+  --card-foreground: #dfe6f2;
+  --popover: #17223a;
+  --popover-foreground: #dfe6f2;
+
+  /* 品牌色：暗色底上提亮保证对比度 */
+  --primary: #60a5fa;
+  --primary-foreground: #0b1220;
+  --secondary: #1c2940;
+  --secondary-foreground: #eef3fb;
+  --muted: #17223a;
+  --muted-foreground: #94a2ba;
+  --accent: #16233a;
+  --accent-foreground: #bfdbfe;
+  --destructive: #f87171;
+  --success: #4ade80;
+  --warning: #fbbf24;
+
+  --border: #27354e;
+  --input: #3d5075;
+  --ring: #60a5fa;
+
+  --chart-1: #60a5fa;
+  --chart-2: #fbbf24;
+  --chart-3: #22d3ee;
+  --chart-4: #4ade80;
+  --chart-5: #c084fc;
+
+  --sidebar: #121b2e;
+  --sidebar-foreground: #b6c2d6;
+  --sidebar-primary: #60a5fa;
+  --sidebar-primary-foreground: #0b1220;
+  --sidebar-accent: #16233a;
+  --sidebar-accent-foreground: #bfdbfe;
+  --sidebar-border: #27354e;
+  --sidebar-ring: #60a5fa;
+
+  --brand-deep: #3b82f6;
+  --brand-soft: #16233a;
+  --brand-hi: #93c5fd;
+}
+
+/* ---------------------------------------------------------------------------
+ * 3. Tailwind 主题映射：颜色全部指向 CSS 变量（禁止页面硬编码色值）
+ * ------------------------------------------------------------------------- */
+@theme {
+  /* 字体：正文系统栈；品牌字/大标题/金额数字用 --font-display（Space Grotesk）。
+     变量同时暴露给 var(--font-sans) 引用（如图表容器的 --vis-font-family）。 */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "HarmonyOS Sans SC", "MiSans", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-display: "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "HarmonyOS Sans SC", "MiSans", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+/* ---------------------------------------------------------------------------
+ * 4. 基础层
+ * ------------------------------------------------------------------------- */
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    scroll-padding-top: 84px;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    min-width: 320px;
+    /* 与背景同色相的品牌色晕染（亮/暗取各自 --brand-soft），手机端随页面滚动 */
+    background-image: radial-gradient(1100px 620px at 88% -12%, var(--brand-soft) 0%, transparent 62%);
+    background-attachment: fixed;
+  }
+
+  @media (max-width: 767px) {
+    body {
+      background-attachment: scroll;
+    }
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--primary) 24%, transparent);
+  }
+
+  /* 细滚动条（跟随边框色） */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * 5. 主题切换过渡：只过渡颜色类属性；首次渲染不加过渡（防闪烁），
+ *    并尊重系统「减弱动态效果」设置。
+ * ------------------------------------------------------------------------- */
+html.theme-ready,
+html.theme-ready *:not(iframe) {
+  transition:
+    background-color 0.25s ease,
+    color 0.25s ease,
+    border-color 0.25s ease,
+    box-shadow 0.25s ease,
+    fill 0.25s ease,
+    stroke 0.25s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.theme-ready,
+  html.theme-ready *:not(iframe) {
+    transition: none;
+  }
+}
+
+/* 暗色下统一系统控件的底色（原生日期/时间选择器、滚动条等） */
+.dark input,
+.dark select,
+.dark textarea {
+  color-scheme: dark;
+}

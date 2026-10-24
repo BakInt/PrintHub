@@ -1,10 +1,14 @@
 import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 
 from ..database import get_db
+from ..routers.orders import ensure_files_accessible
+from ..routers.deps import optional_user
 from ..services.files import effective_max_file_size_mb, effective_max_pages
 from ..services.pricing import calculate_files_price_detail, calculate_price_detail, promotion_summary
+from ..services.site_settings import favicon_response_payload, public_site_settings
 
 router = APIRouter(prefix="/api", tags=["public"])
 
@@ -12,6 +16,29 @@ router = APIRouter(prefix="/api", tags=["public"])
 @router.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@router.get("/site-settings")
+def site_settings(db: sqlite3.Connection = Depends(get_db)):
+    """公开站点配置：网页标题、favicon 地址、ICP 备案号。
+
+    前端应用启动时拉取一次并全局应用（document.title、<link rel="icon">、底部备案条），
+    登录页/前台/后台共用；字段留空表示使用前端默认值。
+    """
+    return public_site_settings(db)
+
+
+@router.get("/site/favicon")
+def site_favicon(db: sqlite3.Connection = Depends(get_db)):
+    """输出后台上传的站点图标字节流（未设置时 404，前端回退默认图标）。
+
+    地址带版本戳（?v=N），这里允许长缓存；重新上传后版本号变化即击穿缓存。
+    """
+    payload = favicon_response_payload(db)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="未设置自定义图标")
+    content, media_type = payload
+    return Response(content=content, media_type=media_type, headers={"Cache-Control": "public, max-age=86400"})
 
 
 @router.get("/ready")
@@ -47,6 +74,9 @@ def print_options(db: sqlite3.Connection = Depends(get_db)):
 
     默认打印机未配置、或数据库里查不到该打印机的配置记录时，两项都返回 False
     （前端隐藏对应选项，等价于原有的打印行为，不影响未配置过的老部署）。
+
+    安全修复（V-10.1）：该接口无鉴权，不再向匿名访客返回具体打印机名称
+    （`printer_name` 字段已移除，前端本来也只消费两个能力布尔值）。
     """
     row = db.execute("SELECT value FROM settings WHERE key = 'default_printer'").fetchone()
     printer_name = (row["value"] if row else "") or ""
@@ -57,7 +87,6 @@ def print_options(db: sqlite3.Connection = Depends(get_db)):
             (printer_name,),
         ).fetchone()
     return {
-        "printer_name": printer_name,
         "printer_configured": printer is not None,
         "is_support_color": bool(printer["is_support_color"]) if printer else False,
         "is_support_auto_duplex": bool(printer["is_support_auto_duplex"]) if printer else False,
@@ -65,9 +94,8 @@ def print_options(db: sqlite3.Connection = Depends(get_db)):
 
 
 @router.post("/price")
-def price(payload: dict, db: sqlite3.Connection = Depends(get_db)):
+def price(payload: dict, db: sqlite3.Connection = Depends(get_db), user: sqlite3.Row | None = Depends(optional_user)):
     copies = int(payload.get("copies", 1))
-    double_sided = bool(payload.get("double_sided", False))
     file_ids = payload.get("file_ids")
     if file_ids:
         if not isinstance(file_ids, list):
@@ -81,20 +109,14 @@ def price(payload: dict, db: sqlite3.Connection = Depends(get_db)):
         unsafe = [item for item in files if not bool(item["is_safe"])]
         if unsafe:
             raise HTTPException(status_code=400, detail="存在未通过安全检测的文件")
-        # 按份双面：file_settings 中指定的文件用其独立设置，未指定的回退到全局 double_sided。
-        # 双面仅作用于该份文档自身正反面，单页文档在计价时自动折算为单面。
-        file_settings = payload.get("file_settings")
-        duplex_map = {}
-        if isinstance(file_settings, list):
-            for item in file_settings:
-                if isinstance(item, dict) and item.get("file_id"):
-                    duplex_map[str(item["file_id"])] = bool(item.get("double_sided", False))
-        requested_duplex = {
-            item["id"]: duplex_map[item["id"]] if item["id"] in duplex_map else double_sided
-            for item in files
-        }
-        detail = calculate_files_price_detail(db, files, copies, requested_duplex)
+        # 安全修复（V-07）：计价同样禁止引用他人上传的文件。
+        ensure_files_accessible(files, user)
+        # 【新增功能】合并双面打印：True 时把全部文档合并为一个双面打印流计价——
+        # 不同文档的页面按顺序连续排到纸张正反面（两份单页文档可打在同一张纸正反面）。
+        merge_duplex = bool(payload.get("merge_duplex", False))
+        detail = calculate_files_price_detail(db, files, copies, merge_duplex)
     else:
         page_count = int(payload.get("page_count", 0))
+        double_sided = bool(payload.get("double_sided", False))
         detail = calculate_price_detail(db, page_count, copies, double_sided)
     return detail

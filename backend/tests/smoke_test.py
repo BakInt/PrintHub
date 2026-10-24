@@ -1,10 +1,12 @@
 import io
 import json
 import os
+import struct
 import sys
 import tarfile
 import tempfile
 import zipfile
+import zlib
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -20,6 +22,8 @@ os.environ["EPAY_PID"] = "1001"
 os.environ["EPAY_KEY"] = "smoke-epay-key"
 os.environ["PUBLIC_BASE_URL"] = "http://testserver"
 os.environ["FRONTEND_BASE_URL"] = "http://frontend.test"
+# 安全修复（V-04）专项限速在冒烟环境放宽（烟测会连续登录 10 次），仅在测试进程生效。
+os.environ["SENSITIVE_RATE_LIMIT_PER_MINUTE"] = "60"
 # 上传的驱动落在这个目录，断言依赖它必须与 CUPS 驱动搜索目录一致。
 _CONFIG_PATH = Path(_tmpdir.name) / "config.json"
 _CONFIG_PATH.write_text(
@@ -37,10 +41,19 @@ from app.services.epay import build_success_notify_payload, epay_signature_paylo
 from app.services.files import inspect_ole_formula_risk, validate_file_signature
 from app.services.pdf_postprocess import flatten_pdf_smask, rasterize_pdf_for_print
 from app.services import printer as printer_service
-from app.routers import orders as orders_router
+from app.services import print_dispatch as print_dispatch_service
 
 
 def main() -> None:
+    def minimal_png() -> bytes:
+        """构造一张 1x1 合法 PNG（站点图标上传用例），按文件头魔数校验链路。"""
+        def chunk(tag: bytes, data: bytes) -> bytes:
+            return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+        header = struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0)
+        pixel = zlib.compress(b"\x00\xff\x00\x00\xff")
+        return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", pixel) + chunk(b"IEND", b"")
+
     assert normalize_epay_gateway("https://pay.example.com") == "https://pay.example.com/submit.php"
     assert normalize_epay_gateway("https://pay.example.com/") == "https://pay.example.com/submit.php"
     assert normalize_epay_gateway("https://legacy-epay-gateway.example.com/api/pay/submit") == "https://your-epay-gateway.example.com/submit.php"
@@ -75,6 +88,10 @@ def main() -> None:
     assert "实时排队看板" in admin_view_source
     assert "refreshPrintStatus" in admin_view_source
     assert "print-queue" in admin_view_source
+    # 后台「站点设置」tab 与订单详情「预览默认不加载」的关键交互应存在。
+    assert "站点设置" in admin_view_source
+    assert "saveSiteSettingsGroup" in admin_view_source
+    assert "收起预览" in admin_view_source
     cups_config_path = Path(__file__).resolve().parents[2] / "docker/cups/cupsd.conf"
     cups_entrypoint_path = Path(__file__).resolve().parents[2] / "docker/cups/entrypoint.sh"
     # docker/cups 相关配置只在完整部署仓库中存在；本地精简副本缺失时跳过该校验。
@@ -158,9 +175,10 @@ def main() -> None:
         assert default_limits.status_code == 200, default_limits.text
         assert default_limits.json() == {"max_file_size_mb": 50, "max_pages": 100}, default_limits.json()
 
+        # 安全修复（V-01）：系统已初始化（管理员已存在）时，匿名访问 setup 状态一律 401，
+        # 不再向访客泄露初始化状态；仅全新空库返回 available=true。
         setup_restore_status = client.get("/api/setup/restore/status")
-        assert setup_restore_status.status_code == 200
-        assert setup_restore_status.json()["available"] is False
+        assert setup_restore_status.status_code == 401, setup_restore_status.text
 
         price = client.post("/api/price", json={"page_count": 10, "copies": 2, "double_sided": True})
         assert price.status_code == 200
@@ -188,12 +206,15 @@ def main() -> None:
                 assert smoke_user_hash["password_hash"].startswith("bcrypt$")
 
         reused_captcha = captcha_answer()
+        # 登录失败响应携带剩余可尝试次数（默认阈值 5，来自站点设置；前端只展示后端给的信息）。
         bad_login = client.post("/api/auth/login", json={"username": "smoke_user", "password": "wrongpass", "captcha": reused_captcha})
         assert bad_login.status_code == 401
-        assert bad_login.json()["detail"] == "用户名或密码错误"
+        assert bad_login.json()["detail"]["message"] == "用户名或密码错误，还可尝试 4 次"
+        assert bad_login.json()["detail"]["remaining_attempts"] == 4
         reused_captcha_login = client.post("/api/auth/login", json={"username": "smoke_user", "password": "12345678", "captcha": reused_captcha})
         assert reused_captcha_login.status_code == 401
-        assert reused_captcha_login.json()["detail"] == "用户名或密码错误"
+        assert reused_captcha_login.json()["detail"]["message"] == "用户名或密码错误，还可尝试 3 次"
+        assert reused_captcha_login.json()["detail"]["remaining_attempts"] == 3
 
         login = client.post("/api/auth/login", json={"username": "smoke_user", "password": "12345678", "captcha": captcha_answer()})
         assert login.status_code == 200
@@ -231,19 +252,29 @@ def main() -> None:
                 ("lock-user-id", locked_username, "$2b$12$invalidhashvalueforforcedfailure"),
             )
             db.commit()
-        for _ in range(5):
+        # 前四次失败返回 401 + 递减的剩余次数；第 5 次失败即触发锁定，本次直接返回 429 + 锁定提示。
+        for attempt in range(1, 6):
             locked_try = client.post(
                 "/api/auth/login",
                 json={"username": locked_username, "password": "wrongpass", "captcha": captcha_answer()},
             )
-            assert locked_try.status_code == 401
-            assert locked_try.json()["detail"] == "用户名或密码错误"
+            if attempt < 5:
+                assert locked_try.status_code == 401, locked_try.text
+                assert locked_try.json()["detail"]["remaining_attempts"] == 5 - attempt
+                assert locked_try.json()["detail"]["message"] == f"用户名或密码错误，还可尝试 {5 - attempt} 次"
+            else:
+                assert locked_try.status_code == 429, locked_try.text
+                assert locked_try.json()["detail"]["locked"] is True
+                assert "账号已锁定" in locked_try.json()["detail"]["message"]
+                assert locked_try.json()["detail"]["retry_after_minutes"] >= 1
         locked_correct_try = client.post(
             "/api/auth/login",
             json={"username": locked_username, "password": "12345678", "captcha": captcha_answer()},
         )
-        assert locked_correct_try.status_code == 401
-        assert locked_correct_try.json()["detail"] == "用户名或密码错误"
+        # 安全修复（V-04）：锁定期间返回 429 + 退避提示，与普通密码错误的 401 区分。
+        assert locked_correct_try.status_code == 429, locked_correct_try.text
+        assert locked_correct_try.json()["detail"]["locked"] is True
+        assert "账号已锁定" in locked_correct_try.json()["detail"]["message"]
 
         admin_login = client.post("/api/auth/login", json={"username": "admin", "password": "admin123456", "captcha": captcha_answer()})
         assert admin_login.status_code == 200
@@ -255,6 +286,112 @@ def main() -> None:
         assert payment_settings.json()["frontend_base_url"] == "http://frontend.test"
         # 默认网关为占位示例地址（含 example.com），validation 应判定为未就绪
         assert payment_settings.json()["validation"]["ready"] is False
+
+        # ===== 站点设置：公开获取 / 管理员获取 / 保存立即生效 / 图标上传与校验 =====
+        public_site = client.get("/api/site-settings")
+        assert public_site.status_code == 200, public_site.text
+        assert public_site.json() == {"site_title": "", "site_favicon_url": "", "site_icp_number": ""}
+        # 管理接口必须鉴权：用普通用户 token（优先于 cookie）访问站点设置应被 403 拦截。
+        smoke_user_headers = {"Authorization": f"Bearer {token}"}
+        assert client.get("/api/admin/site-settings", headers=smoke_user_headers).status_code == 403
+        assert client.put("/api/admin/site-settings", headers=smoke_user_headers, json={"site_title": "x"}).status_code == 403
+
+        admin_site = client.get("/api/admin/site-settings", headers=admin_headers)
+        assert admin_site.status_code == 200, admin_site.text
+        assert admin_site.json()["site_favicon_mode"] == "none"
+        # 登录锁定策略播种自 config.json 默认值：阈值 5 次 / 15 分钟。
+        assert admin_site.json()["login_lock_threshold"] == 5
+        assert admin_site.json()["login_lock_minutes"] == 15
+
+        save_site = client.put(
+            "/api/admin/site-settings",
+            headers=admin_headers,
+            json={
+                "site_title": "小张云打印",
+                "site_icp_number": "京ICP备2026000001号",
+                "login_lock_threshold": 3,
+                "login_lock_minutes": 10,
+            },
+        )
+        assert save_site.status_code == 200, save_site.text
+        public_site = client.get("/api/site-settings")
+        assert public_site.json()["site_title"] == "小张云打印"
+        assert public_site.json()["site_icp_number"] == "京ICP备2026000001号"
+        # 登录锁定策略保存后立即作用于登录接口：连续失败 3 次即锁定，提示 10 分钟。
+        site_lock_username = "site_lock_user"
+        for attempt in range(1, 4):
+            site_lock_try = client.post(
+                "/api/auth/login",
+                json={"username": site_lock_username, "password": "wrongpass", "captcha": captcha_answer()},
+            )
+            if attempt < 3:
+                assert site_lock_try.status_code == 401, site_lock_try.text
+                assert site_lock_try.json()["detail"]["remaining_attempts"] == 3 - attempt
+            else:
+                assert site_lock_try.status_code == 429, site_lock_try.text
+                assert site_lock_try.json()["detail"]["locked"] is True
+                assert "10 分钟" in site_lock_try.json()["detail"]["message"]
+
+        # 图标未设置时公开 favicon 输出 404。
+        assert client.get("/api/site/favicon").status_code == 404
+        # 最小合法 PNG（1x1），上传后立即以 upload 模式生效，公开接口可取回同一份字节。
+        png_bytes = minimal_png()
+        favicon_upload = client.post(
+            "/api/admin/site-settings/favicon",
+            headers=admin_headers,
+            files={"file": ("favicon.png", png_bytes, "image/png")},
+        )
+        assert favicon_upload.status_code == 200, favicon_upload.text
+        assert favicon_upload.json()["settings"]["site_favicon_mode"] == "upload"
+        effective_url = favicon_upload.json()["settings"]["site_favicon_effective_url"]
+        assert effective_url.startswith("/api/site/favicon?v=")
+        assert client.get("/api/site-settings").json()["site_favicon_url"] == effective_url
+        favicon_response = client.get("/api/site/favicon")
+        assert favicon_response.status_code == 200, favicon_response.text
+        assert favicon_response.headers["content-type"] == "image/png"
+        assert favicon_response.content == png_bytes
+        # 伪造扩展名的非法内容必须被拒绝（按文件头判定）。
+        bad_favicon = client.post(
+            "/api/admin/site-settings/favicon",
+            headers=admin_headers,
+            files={"file": ("favicon.png", b"not-an-image", "image/png")},
+        )
+        assert bad_favicon.status_code == 400, bad_favicon.text
+        oversize_favicon = client.post(
+            "/api/admin/site-settings/favicon",
+            headers=admin_headers,
+            files={"file": ("favicon.png", b"\x89PNG\r\n\x1a\n" + b"0" * (200 * 1024), "image/png")},
+        )
+        assert oversize_favicon.status_code == 400, oversize_favicon.text
+
+        # URL 模式：保存外链后公开配置返回该地址；非法协议被拒绝；none 模式清空生效地址。
+        url_favicon = client.put(
+            "/api/admin/site-settings",
+            headers=admin_headers,
+            json={"site_favicon_mode": "url", "site_favicon_url": "https://example.com/favicon.ico"},
+        )
+        assert url_favicon.status_code == 200, url_favicon.text
+        assert client.get("/api/site-settings").json()["site_favicon_url"] == "https://example.com/favicon.ico"
+        bad_url_favicon = client.put(
+            "/api/admin/site-settings",
+            headers=admin_headers,
+            json={"site_favicon_mode": "url", "site_favicon_url": "javascript:alert(1)"},
+        )
+        assert bad_url_favicon.status_code == 400, bad_url_favicon.text
+        clear_favicon = client.put("/api/admin/site-settings", headers=admin_headers, json={"site_favicon_mode": "none"})
+        assert clear_favicon.status_code == 200, clear_favicon.text
+        assert client.get("/api/site-settings").json()["site_favicon_url"] == ""
+        # PUT 不允许直接写 upload 模式（只能通过上传接口），避免悬空状态。
+        direct_upload_mode = client.put("/api/admin/site-settings", headers=admin_headers, json={"site_favicon_mode": "upload"})
+        assert direct_upload_mode.status_code == 400, direct_upload_mode.text
+
+        # 恢复默认锁定阈值与站点字段，避免影响后续用例。
+        restore_site = client.put(
+            "/api/admin/site-settings",
+            headers=admin_headers,
+            json={"site_title": "", "site_icp_number": "", "login_lock_threshold": 5, "login_lock_minutes": 15},
+        )
+        assert restore_site.status_code == 200, restore_site.text
 
         class FakeCups:
             class IPPError(Exception):
@@ -804,7 +941,7 @@ def main() -> None:
 
         bulk_discount_price = client.post(
             "/api/price",
-            json={"file_ids": ["discount-file"], "copies": 1, "double_sided": True},
+            json={"file_ids": ["discount-file"], "copies": 1, "merge_duplex": True},
         )
         assert bulk_discount_price.status_code == 200, bulk_discount_price.text
         assert bulk_discount_price.json()["amount"] == 2.85
@@ -813,45 +950,14 @@ def main() -> None:
         assert bulk_discount_price.json()["sheet_count"] == 10
         assert bulk_discount_price.json()["applied_discount"]["type"] == "bulk"
 
-        # 单页文档禁止双面打印：下单接口应拒绝，且给出明确提示信息。
-        single_page_duplex_order = client.post(
-            "/api/payment/create",
-            json={
-                "file_ids": ["single-page-file"],
-                "print_settings": {
-                    "copies": 1,
-                    "double_sided": True,
-                    "contact_name": "单页用户",
-                    "contact_phone": "13700137000",
-                },
-                "payment_method": "alipay",
-            },
-        )
-        assert single_page_duplex_order.status_code == 400, single_page_duplex_order.text
-        assert "双面打印" in single_page_duplex_order.json()["detail"]
-        # 单页文档的单面打印仍可正常下单。
-        single_page_single_order = client.post(
-            "/api/payment/create",
-            json={
-                "file_ids": ["single-page-file"],
-                "print_settings": {
-                    "copies": 1,
-                    "double_sided": False,
-                    "contact_name": "单页用户",
-                    "contact_phone": "13700137000",
-                },
-                "payment_method": "alipay",
-            },
-        )
-        assert single_page_single_order.status_code == 200, single_page_single_order.text
-        # 多页文档的双面打印不受影响，可正常下单。
+        # 合并双面打印：多页文档可勾选，张数按 ceil(页数/2) 折算并使用双面价，可正常下单。
         multi_page_duplex_order = client.post(
             "/api/payment/create",
             json={
                 "file_ids": ["discount-file"],
                 "print_settings": {
                     "copies": 1,
-                    "double_sided": True,
+                    "merge_duplex": True,
                     "contact_name": "多页用户",
                     "contact_phone": "13700137000",
                 },
@@ -859,87 +965,102 @@ def main() -> None:
             },
         )
         assert multi_page_duplex_order.status_code == 200, multi_page_duplex_order.text
-        # 两份单页文档不再允许合并到同一张纸的正反面：全局双面时应被拒绝。
-        two_single_page_duplex_order = client.post(
+        assert multi_page_duplex_order.json()["sheet_count"] == 10
+        assert multi_page_duplex_order.json()["base_amount"] == 3.0
+        # 【新功能】两份单页文档勾选「合并双面打印」：跨文档合并到同一张纸的正反面，
+        # 合计 2 页 → 1 张纸，按双面价 0.3 计。
+        two_single_page_merged_order = client.post(
             "/api/payment/create",
             json={
                 "file_ids": ["single-page-file", "single-page-file-b"],
                 "print_settings": {
                     "copies": 1,
-                    "double_sided": True,
+                    "merge_duplex": True,
                     "contact_name": "合并用户",
                     "contact_phone": "13700137000",
                 },
                 "payment_method": "alipay",
             },
         )
-        assert two_single_page_duplex_order.status_code == 400, two_single_page_duplex_order.text
-        assert "双面打印" in two_single_page_duplex_order.json()["detail"]
-        # 按份双面：多页文档启用双面、单页文档保持单面，应正常下单，并逐份落库。
-        per_file_duplex_order = client.post(
+        assert two_single_page_merged_order.status_code == 200, two_single_page_merged_order.text
+        assert two_single_page_merged_order.json()["sheet_count"] == 1
+        assert two_single_page_merged_order.json()["base_amount"] == 0.3
+        # 单份单页文档也可勾选（仅 1 页时等效打印正面），按 1 张双面价计。
+        single_page_merged_order = client.post(
             "/api/payment/create",
             json={
-                "file_ids": ["discount-file", "single-page-file"],
+                "file_ids": ["single-page-file"],
                 "print_settings": {
                     "copies": 1,
-                    "file_settings": [
-                        {"file_id": "discount-file", "double_sided": True},
-                        {"file_id": "single-page-file", "double_sided": False},
-                    ],
-                    "contact_name": "按份用户",
+                    "merge_duplex": True,
+                    "contact_name": "合并用户",
                     "contact_phone": "13700137000",
                 },
                 "payment_method": "alipay",
             },
         )
-        assert per_file_duplex_order.status_code == 200, per_file_duplex_order.text
-        per_file_order_id = per_file_duplex_order.json()["order_id"]
-        per_file_detail = client.get(
-            f"/api/admin/orders/{per_file_order_id}/detail",
-            headers=admin_headers,
-        )
-        assert per_file_detail.status_code == 200, per_file_detail.text
-        per_file_files = {item["id"]: item for item in per_file_detail.json()["files"]}
-        assert per_file_files["discount-file"]["is_double_sided"] is True
-        assert per_file_files["single-page-file"]["is_double_sided"] is False
-        # 按份双面：给单页文档单独开启双面应被拒绝。
-        per_file_single_duplex_order = client.post(
+        assert single_page_merged_order.status_code == 200, single_page_merged_order.text
+        assert single_page_merged_order.json()["sheet_count"] == 1
+        # 单页文档的单面打印不受影响，可正常下单。
+        single_page_single_order = client.post(
             "/api/payment/create",
             json={
-                "file_ids": ["discount-file", "single-page-file"],
+                "file_ids": ["single-page-file"],
                 "print_settings": {
                     "copies": 1,
-                    "file_settings": [
-                        {"file_id": "discount-file", "double_sided": False},
-                        {"file_id": "single-page-file", "double_sided": True},
-                    ],
-                    "contact_name": "按份用户",
+                    "contact_name": "单页用户",
                     "contact_phone": "13700137000",
                 },
                 "payment_method": "alipay",
             },
         )
-        assert per_file_single_duplex_order.status_code == 400, per_file_single_duplex_order.text
-        assert "双面打印" in per_file_single_duplex_order.json()["detail"]
-        # 按份价格接口：discount-file 双面 + single-page-file 单面。
-        per_file_price = client.post(
+        assert single_page_single_order.status_code == 200, single_page_single_order.text
+        # 合并双面价格接口：多页 + 单页文档合并，合计 21 页 → ceil(21/2)=11 张，全部按双面价。
+        merged_multi_price = client.post(
             "/api/price",
             json={
                 "file_ids": ["discount-file", "single-page-file"],
                 "copies": 1,
-                "file_settings": [
-                    {"file_id": "discount-file", "double_sided": True},
-                    {"file_id": "single-page-file", "double_sided": False},
-                ],
+                "merge_duplex": True,
             },
         )
-        assert per_file_price.status_code == 200, per_file_price.text
-        # discount-file 双面 ceil(20/2)=10 张，single-page-file 单面 1 张，合计 11 张。
-        assert per_file_price.json()["sheet_count"] == 11
-        # base = 10*0.3 + 1*0.5 = 3.5
-        assert per_file_price.json()["base_amount"] == 3.5
+        assert merged_multi_price.status_code == 200, merged_multi_price.text
+        assert merged_multi_price.json()["sheet_count"] == 11
+        # base = 11 × 0.3 = 3.3
+        assert merged_multi_price.json()["base_amount"] == 3.3
+        assert merged_multi_price.json()["merge_duplex"] is True
+        # 合并双面订单落库：orders.is_double_sided=1，order_items 全部标记双面。
+        merged_multi_order = client.post(
+            "/api/payment/create",
+            json={
+                "file_ids": ["discount-file", "single-page-file"],
+                "print_settings": {
+                    "copies": 1,
+                    "merge_duplex": True,
+                    "contact_name": "合并用户",
+                    "contact_phone": "13700137000",
+                },
+                "payment_method": "alipay",
+            },
+        )
+        assert merged_multi_order.status_code == 200, merged_multi_order.text
+        merged_order_id = merged_multi_order.json()["order_id"]
+        merged_detail = client.get(
+            f"/api/admin/orders/{merged_order_id}/detail",
+            headers=admin_headers,
+        )
+        assert merged_detail.status_code == 200, merged_detail.text
+        merged_files = merged_detail.json()["files"]
+        assert merged_files
+        assert all(item["is_double_sided"] is True for item in merged_files)
         # 清理上述验证性订单，避免影响后续限时特价的已用张数统计。
-        for duplex_check_order in (single_page_single_order, multi_page_duplex_order, per_file_duplex_order):
+        for duplex_check_order in (
+            single_page_single_order,
+            multi_page_duplex_order,
+            two_single_page_merged_order,
+            single_page_merged_order,
+            merged_multi_order,
+        ):
             cleanup_duplex_order = client.delete(
                 f"/api/admin/orders/{duplex_check_order.json()['order_id']}/unpaid",
                 headers=admin_headers,
@@ -953,7 +1074,7 @@ def main() -> None:
         assert disable_bulk_discount.status_code == 200, disable_bulk_discount.text
         bulk_discount_off_price = client.post(
             "/api/price",
-            json={"file_ids": ["discount-file"], "copies": 1, "double_sided": True},
+            json={"file_ids": ["discount-file"], "copies": 1, "merge_duplex": True},
         )
         assert bulk_discount_off_price.status_code == 200, bulk_discount_off_price.text
         assert bulk_discount_off_price.json()["amount"] == 3.0
@@ -993,7 +1114,7 @@ def main() -> None:
         assert limited_offer_promo["remaining_sheets"] == 100
         limited_offer_price = client.post(
             "/api/price",
-            json={"file_ids": ["discount-file"], "copies": 1, "double_sided": False},
+            json={"file_ids": ["discount-file"], "copies": 1},
         )
         assert limited_offer_price.status_code == 200, limited_offer_price.text
         assert limited_offer_price.json()["amount"] == 5.0
@@ -1006,7 +1127,6 @@ def main() -> None:
                 "file_ids": ["discount-file"],
                 "print_settings": {
                     "copies": 1,
-                    "double_sided": False,
                     "contact_name": "优惠用户",
                     "contact_phone": "13700137000",
                 },
@@ -1028,7 +1148,7 @@ def main() -> None:
         assert limited_offer_quota_settings.status_code == 200, limited_offer_quota_settings.text
         quota_exceeded_price = client.post(
             "/api/price",
-            json={"file_ids": ["discount-file"], "copies": 1, "double_sided": False},
+            json={"file_ids": ["discount-file"], "copies": 1},
         )
         assert quota_exceeded_price.status_code == 200, quota_exceeded_price.text
         assert quota_exceeded_price.json()["amount"] == 9.5
@@ -1058,7 +1178,7 @@ def main() -> None:
         assert free_offer_promo["discount"] == 0
         free_offer_price = client.post(
             "/api/price",
-            json={"file_ids": ["discount-file"], "copies": 1, "double_sided": False},
+            json={"file_ids": ["discount-file"], "copies": 1},
         )
         assert free_offer_price.status_code == 200, free_offer_price.text
         assert free_offer_price.json()["amount"] == 0
@@ -1072,7 +1192,6 @@ def main() -> None:
                 "file_ids": ["discount-file"],
                 "print_settings": {
                     "copies": 1,
-                    "double_sided": False,
                     "contact_name": "免费用户",
                     "contact_phone": "13700137000",
                 },
@@ -1163,26 +1282,26 @@ def main() -> None:
         assert coverage_settings.status_code == 200, coverage_settings.text
         coverage_single = client.post(
             "/api/price",
-            json={"file_ids": ["coverage-tier-file"], "copies": 1, "double_sided": False},
+            json={"file_ids": ["coverage-tier-file"], "copies": 1},
         )
         assert coverage_single.status_code == 200, coverage_single.text
         assert coverage_single.json()["pricing_mode"] == "coverage_tiered"
         assert coverage_single.json()["amount"] == 0.93
         coverage_duplex = client.post(
             "/api/price",
-            json={"file_ids": ["coverage-tier-file"], "copies": 1, "double_sided": True},
+            json={"file_ids": ["coverage-tier-file"], "copies": 1, "merge_duplex": True},
         )
         assert coverage_duplex.status_code == 200, coverage_duplex.text
         assert coverage_duplex.json()["amount"] == 0.74
         coverage_copies = client.post(
             "/api/price",
-            json={"file_ids": ["coverage-tier-file"], "copies": 2, "double_sided": False},
+            json={"file_ids": ["coverage-tier-file"], "copies": 2},
         )
         assert coverage_copies.status_code == 200, coverage_copies.text
         assert coverage_copies.json()["amount"] == 1.85
         legacy_coverage = client.post(
             "/api/price",
-            json={"file_ids": ["coverage-legacy-file"], "copies": 1, "double_sided": False},
+            json={"file_ids": ["coverage-legacy-file"], "copies": 1},
         )
         assert legacy_coverage.status_code == 200, legacy_coverage.text
         assert legacy_coverage.json()["amount"] == 0.65
@@ -1192,7 +1311,6 @@ def main() -> None:
                 "file_ids": ["coverage-tier-file"],
                 "print_settings": {
                     "copies": 1,
-                    "double_sided": False,
                     "contact_name": "覆盖率用户",
                     "contact_phone": "13800138000",
                 },
@@ -1233,9 +1351,14 @@ def main() -> None:
             db.commit()
 
         # mock 打印模式已移除；订单派发链路会调用真实 print_pdf，而冒烟环境没有可用的 CUPS 服务。
-        # 为了让下单/支付/打印派发流程可确定性验证，这里把 orders 路由使用的 print_pdf 打桩为固定成功返回。
-        original_dispatch_print_pdf = orders_router.print_pdf
-        orders_router.print_pdf = lambda *args, **kwargs: ("cups-smoke-job", None)
+        # 为了让下单/支付/打印派发流程可确定性验证，这里把派发服务（print_dispatch）使用的
+        # print_pdf 打桩为固定成功返回。
+        # 【性能修复适配】打印派发已移到 services/print_dispatch.py 且默认异步执行；冒烟测试
+        # 需要同步断言 printing 状态，这里切换为同步模式（在请求事务内派发，语义与旧版一致）。
+        original_dispatch_print_pdf = print_dispatch_service.print_pdf
+        original_async_dispatch = print_dispatch_service.ASYNC_DISPATCH
+        print_dispatch_service.print_pdf = lambda *args, **kwargs: ("cups-smoke-job", None)
+        print_dispatch_service.ASYNC_DISPATCH = False
 
         def create_print_order(payment_method: str, file_id: str, headers: dict[str, str] | None = None) -> dict:
             response = client.post(
@@ -1245,7 +1368,6 @@ def main() -> None:
                     "file_ids": [file_id],
                     "print_settings": {
                         "copies": 1,
-                        "double_sided": False,
                         "contact_name": "烟测用户",
                         "contact_phone": "13900139000",
                     },
@@ -1264,7 +1386,6 @@ def main() -> None:
                 "file_ids": ["smoke-file-alipay"],
                 "print_settings": {
                     "copies": 1,
-                    "double_sided": False,
                     "contact_name": "烟测用户",
                     "contact_phone": "12345",
                 },
@@ -1280,24 +1401,38 @@ def main() -> None:
                 "file_ids": ["smoke-file-profile-contact"],
                 "print_settings": {
                     "copies": 1,
-                    "double_sided": False,
                 },
                 "payment_method": "alipay",
             },
         )
         assert profile_contact_order.status_code == 200, profile_contact_order.text
-        profile_contact_order_row = client.get(f"/api/orders/{profile_contact_order.json()['order_id']}")
+        profile_contact_order_row = client.get(
+            f"/api/orders/{profile_contact_order.json()['order_id']}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
         assert profile_contact_order_row.status_code == 200
         assert profile_contact_order_row.json()["contact_name"] == "烟测绑定用户"
         assert profile_contact_order_row.json()["contact_phone"] == "13600136000"
+        # 安全修复（V-03）：同一订单匿名访问只能拿到状态摘要，联系人/手机号/user_id 不再泄露。
+        profile_contact_anonymous_row = client.get(f"/api/orders/{profile_contact_order.json()['order_id']}")
+        assert profile_contact_anonymous_row.status_code == 200
+        assert profile_contact_anonymous_row.json()["status"] in {"pending", "paid", "printing", "completed", "print_failed"}
+        assert "contact_name" not in profile_contact_anonymous_row.json()
+        assert "contact_phone" not in profile_contact_anonymous_row.json()
+        assert "user_id" not in profile_contact_anonymous_row.json()
+        assert "pricing_detail" not in profile_contact_anonymous_row.json()
 
         alipay_order = create_print_order("alipay", "smoke-file-alipay")
         assert alipay_order["qr_code_url"] == f"/api/payment/submit/{alipay_order['order_id']}"
+        # 访客订单匿名可见的只有状态摘要（V-03）；完整字段走管理员详情接口校验。
         alipay_order_row = client.get(f"/api/orders/{alipay_order['order_id']}")
         assert alipay_order_row.status_code == 200
-        assert alipay_order_row.json()["payment_method"] == "alipay"
-        assert alipay_order_row.json()["contact_name"] == "烟测用户"
-        assert alipay_order_row.json()["contact_phone"] == "13900139000"
+        assert "contact_name" not in alipay_order_row.json()
+        assert "contact_phone" not in alipay_order_row.json()
+        alipay_order_admin_row = client.get(f"/api/orders/{alipay_order['order_id']}", headers=admin_headers)
+        assert alipay_order_admin_row.json()["payment_method"] == "alipay"
+        assert alipay_order_admin_row.json()["contact_name"] == "烟测用户"
+        assert alipay_order_admin_row.json()["contact_phone"] == "13900139000"
 
         admin_orders = client.get("/api/admin/orders", headers=admin_headers)
         assert admin_orders.status_code == 200
@@ -1314,13 +1449,13 @@ def main() -> None:
 
         wxpay_order = create_print_order("wxpay", "smoke-file-wxpay")
         assert wxpay_order["qr_code_url"] == f"/api/payment/submit/{wxpay_order['order_id']}"
-        wxpay_order_row = client.get(f"/api/orders/{wxpay_order['order_id']}")
+        wxpay_order_row = client.get(f"/api/orders/{wxpay_order['order_id']}", headers=admin_headers)
         assert wxpay_order_row.status_code == 200
         assert wxpay_order_row.json()["payment_method"] == "wxpay"
 
         legacy_epay_order = create_print_order("epay", "smoke-file-epay")
         assert legacy_epay_order["qr_code_url"] == f"/api/payment/submit/{legacy_epay_order['order_id']}"
-        legacy_epay_order_row = client.get(f"/api/orders/{legacy_epay_order['order_id']}")
+        legacy_epay_order_row = client.get(f"/api/orders/{legacy_epay_order['order_id']}", headers=admin_headers)
         assert legacy_epay_order_row.status_code == 200
         assert legacy_epay_order_row.json()["payment_method"] == "alipay"
 
@@ -1337,7 +1472,6 @@ def main() -> None:
                 "file_ids": ["smoke-file-free"],
                 "print_settings": {
                     "copies": 1,
-                    "double_sided": False,
                     "contact_name": "烟测用户",
                     "contact_phone": "13900139000",
                 },
@@ -1399,7 +1533,7 @@ def main() -> None:
         assert recharge_data["amount"] == 25
         assert recharge_data["payment_method"] == "alipay"
         assert recharge_data["qr_code_url"] == f"/api/payment/submit/{recharge_data['order_id']}"
-        recharge_row = client.get(f"/api/orders/{recharge_data['order_id']}")
+        recharge_row = client.get(f"/api/orders/{recharge_data['order_id']}", headers=admin_headers)
         assert recharge_row.status_code == 200
         assert recharge_row.json()["order_type"] == "recharge"
         assert recharge_row.json()["status"] == "pending"
@@ -1430,7 +1564,7 @@ def main() -> None:
         )
         recharge_notify = client.post("/api/payment/notify", data=recharge_payload)
         assert recharge_notify.status_code == 200
-        paid_recharge_row = client.get(f"/api/orders/{recharge_data['order_id']}")
+        paid_recharge_row = client.get(f"/api/orders/{recharge_data['order_id']}", headers=admin_headers)
         assert paid_recharge_row.status_code == 200
         assert paid_recharge_row.json()["status"] == "paid"
         assert paid_recharge_row.json()["print_job_id"] is None
@@ -1473,6 +1607,42 @@ def main() -> None:
         assert client.get("/api/user/orders", headers=orders_headers, params={"offset": -1}).status_code == 422
         assert client.get("/api/user/orders", headers=orders_headers, params={"limit": 0}).status_code == 422
 
+        # 安全修复（V-07）回归：登录用户不能引用他人上传的文件计价/下单。
+        with connect() as db:
+            admin_id_row = db.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()
+            db.execute("UPDATE files SET user_id = ? WHERE id = 'smoke-file-free'", (admin_id_row["id"],))
+            db.commit()
+        foreign_price = client.post(
+            "/api/price",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"file_ids": ["smoke-file-free"], "copies": 1},
+        )
+        assert foreign_price.status_code == 403, foreign_price.text
+        foreign_order = client.post(
+            "/api/payment/create",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "file_ids": ["smoke-file-free"],
+                "print_settings": {
+                    "copies": 1,
+                    "contact_name": "越权用户",
+                    "contact_phone": "13700137000",
+                },
+                "payment_method": "balance",
+            },
+        )
+        assert foreign_order.status_code == 403, foreign_order.text
+        # 属主本人（管理员）引用自己的文件仍然可用。
+        owner_price = client.post(
+            "/api/price",
+            headers=admin_headers,
+            json={"file_ids": ["smoke-file-free"], "copies": 1},
+        )
+        assert owner_price.status_code == 200, owner_price.text
+        with connect() as db:
+            db.execute("UPDATE files SET user_id = NULL WHERE id = 'smoke-file-free'")
+            db.commit()
+
         duplicate_recharge_notify = client.get("/api/payment/notify", params=recharge_payload)
         assert duplicate_recharge_notify.status_code == 200
         duplicate_recharge_return = client.get(
@@ -1488,7 +1658,7 @@ def main() -> None:
 
         balance_order = create_print_order("balance", "smoke-file-balance", {"Authorization": f"Bearer {token}"})
         assert balance_order["balance_deducted"] is True
-        balance_order_row = client.get(f"/api/orders/{balance_order['order_id']}")
+        balance_order_row = client.get(f"/api/orders/{balance_order['order_id']}", headers={"Authorization": f"Bearer {token}"})
         assert balance_order_row.status_code == 200
         assert balance_order_row.json()["payment_method"] == "balance"
         assert balance_order_row.json()["status"] == "printing"
@@ -1584,7 +1754,7 @@ def main() -> None:
         )
         assert return_print.status_code == 303
         assert return_print.headers["location"] == f"http://frontend.test/payment/{return_print_order['order_id']}"
-        return_print_row = client.get(f"/api/orders/{return_print_order['order_id']}")
+        return_print_row = client.get(f"/api/orders/{return_print_order['order_id']}", headers=admin_headers)
         assert return_print_row.status_code == 200
         assert return_print_row.json()["status"] == "printing"
         # mock 打印模式已移除；此处 print_job_id 来自打桩的 print_pdf 固定返回值。
@@ -1615,13 +1785,14 @@ def main() -> None:
         )
         recover_notify = client.post("/api/payment/notify", data=recover_payload)
         assert recover_notify.status_code == 200
-        recover_print_row = client.get(f"/api/orders/{recover_print_order['order_id']}")
+        recover_print_row = client.get(f"/api/orders/{recover_print_order['order_id']}", headers=admin_headers)
         assert recover_print_row.status_code == 200
         assert recover_print_row.json()["status"] == "printing"
         # mock 打印模式已移除；此处 print_job_id 来自打桩的 print_pdf。
         assert recover_print_row.json()["print_job_id"] == "cups-smoke-job"
 
-        orders_router.print_pdf = original_dispatch_print_pdf
+        print_dispatch_service.print_pdf = original_dispatch_print_pdf
+        print_dispatch_service.ASYNC_DISPATCH = original_async_dispatch
 
         test_payment = client.post(
             "/api/admin/payment-test",
@@ -1689,7 +1860,7 @@ def main() -> None:
         assert simulated_payment_data["epay_trade_no"].startswith("SIM")
         assert simulated_payment_data["params"]["sign"] == sign_params(simulated_payment_data["params"], "smoke-epay-key")
 
-        simulated_order = client.get(f"/api/orders/{mismatch_payment.json()['order_id']}")
+        simulated_order = client.get(f"/api/orders/{mismatch_payment.json()['order_id']}", headers=admin_headers)
         assert simulated_order.status_code == 200
         assert simulated_order.json()["status"] == "paid"
         assert simulated_order.json()["print_job_id"] is None
@@ -1706,7 +1877,7 @@ def main() -> None:
         assert notify.status_code == 200
         assert notify.text == "success"
 
-        paid_order = client.get(f"/api/orders/{test_payment_data['order_id']}")
+        paid_order = client.get(f"/api/orders/{test_payment_data['order_id']}", headers=admin_headers)
         assert paid_order.status_code == 200
         paid_order_data = paid_order.json()
         assert paid_order_data["status"] == "paid"
@@ -1771,6 +1942,34 @@ def main() -> None:
             assert restored_me.json()["balance"] == 34.5
         delete_backup = client.delete(f"/api/admin/backups/{backup_data['filename']}", headers=admin_headers)
         assert delete_backup.status_code == 200, delete_backup.text
+
+        # 安全修复（V-05）回归：logout 后旧 bearer token 必须立即失效（服务端吊销）。
+        revoked_login = client.post(
+            "/api/auth/login",
+            json={"username": "smoke_user", "password": "12345678", "captcha": captcha_answer()},
+        )
+        assert revoked_login.status_code == 200, revoked_login.text
+        revoked_token = revoked_login.json()["token"]
+        revoked_me = client.get("/api/auth/me", headers={"Authorization": f"Bearer {revoked_token}"})
+        assert revoked_me.status_code == 200, revoked_me.text
+        revoked_logout = client.post("/api/auth/logout", headers={"Authorization": f"Bearer {revoked_token}"})
+        assert revoked_logout.status_code == 200, revoked_logout.text
+        after_logout_me = client.get("/api/auth/me", headers={"Authorization": f"Bearer {revoked_token}"})
+        assert after_logout_me.status_code == 401, after_logout_me.text
+        # 管理员封禁用户同样吊销其全部 token：重新登录拿到新 token，再由管理员禁用。
+        relogin = client.post(
+            "/api/auth/login",
+            json={"username": "smoke_user", "password": "12345678", "captcha": captcha_answer()},
+        )
+        assert relogin.status_code == 200, relogin.text
+        smoke_user_id = relogin.json()["user"]["id"]
+        ban_resp = client.put(f"/api/admin/users/{smoke_user_id}", headers=admin_headers, json={"is_active": False})
+        assert ban_resp.status_code == 200, ban_resp.text
+        banned_me = client.get("/api/auth/me", headers={"Authorization": f"Bearer {relogin.json()['token']}"})
+        assert banned_me.status_code == 401, banned_me.text
+        # 恢复可用，避免影响后续用例。
+        unban_resp = client.put(f"/api/admin/users/{smoke_user_id}", headers=admin_headers, json={"is_active": True})
+        assert unban_resp.status_code == 200, unban_resp.text
 
     with tempfile.NamedTemporaryFile(suffix=".pdf") as handle:
         handle.write(b"not a pdf")

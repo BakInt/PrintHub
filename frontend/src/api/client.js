@@ -128,7 +128,9 @@ function normalizeErrorMessage(message) {
     if (text.includes('uri') || text.includes('URI')) {
       parts.push('请检查打印机 URI 格式是否正确')
     }
-    parts.push('建议在软路由 CUPS 管理界面（http://192.168.1.1:631/）中手动测试添加打印机')
+    // 安全修复（V-10.5）：不再向前端用户暴露具体内网 CUPS 地址（含硬编码的网关 IP），
+    // 具体排障指引由管理员在后台「打印机管理」/ CUPS 日志中查看。
+    parts.push('建议管理员在后台「打印机管理」或 CUPS 管理界面中手动测试添加打印机')
     return parts.join('；')
   }
   

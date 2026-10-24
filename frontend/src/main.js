@@ -2,8 +2,7 @@ import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import App from './App.vue'
 import router from './router'
-// 先加载主题变量（PC 亮/暗 + 移动端亮/暗，见 assets/theme.css），再加载组件样式
-import './assets/theme.css'
-import './assets/styles.css'
+// 全局样式入口：Tailwind v4 + shadcn-vue CSS 变量主题（亮/暗由 html.dark 切换）
+import './assets/index.css'
 
 createApp(App).use(createPinia()).use(router).mount('#app')

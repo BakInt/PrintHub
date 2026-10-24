@@ -1,4 +1,5 @@
 import io
+import math
 import secrets
 import sqlite3
 import string
@@ -9,6 +10,7 @@ from fastapi import HTTPException, Request, Response, status
 from PIL import Image, ImageDraw, ImageFont
 
 from ..config import get_settings
+from .site_settings import login_lock_seconds_of, login_lock_threshold_of
 
 
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS", "TRACE"}
@@ -174,24 +176,37 @@ def failure_key(username: str) -> str:
 
 
 def assert_not_locked(db: sqlite3.Connection, ip_address: str, username: str) -> None:
-    settings = get_settings()
     row = db.execute(
         "SELECT locked_until FROM login_failures WHERE ip_address = ? AND username = ?",
         (ip_address, failure_key(username)),
     ).fetchone()
     if row and float(row["locked_until"] or 0) > now_ts():
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=LOGIN_ERROR)
+        # 安全修复（V-04）：锁定中返回 429 与明确的退避提示（锁定由连续失败触发，
+        # 不存在「通过响应差异枚举账号」的问题），并区分于普通的密码错误 401。
+        # 结构化 detail 让前端展示「账号已锁定，请 N 分钟后重试」（锁定分钟数由后端给出）。
+        minutes = max(1, math.ceil((float(row["locked_until"]) - now_ts()) / 60))
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={"message": f"账号已锁定，请 {minutes} 分钟后重试", "locked": True, "retry_after_minutes": minutes},
+        )
 
 
-def record_login_failure(db: sqlite3.Connection, ip_address: str, username: str) -> None:
-    settings = get_settings()
+def record_login_failure(db: sqlite3.Connection, ip_address: str, username: str) -> dict:
+    """记录一次登录失败，返回 {"failed_count", "locked_until", "locked", "remaining"}。
+
+    阈值/时长来自站点设置（数据库 `login_lock_threshold` / `login_lock_minutes`，
+    后台「站点设置」页可改；缺键回退 config.json 部署级键），本次失败刚好达到阈值
+    时立即写入 locked_until（触发锁定），由调用方把锁定提示返回给前端。
+    """
+    threshold = login_lock_threshold_of(db)
     key = failure_key(username)
     row = db.execute(
         "SELECT id, failed_count FROM login_failures WHERE ip_address = ? AND username = ?",
         (ip_address, key),
     ).fetchone()
     failed_count = int(row["failed_count"]) + 1 if row else 1
-    locked_until = now_ts() + settings.login_lock_seconds if failed_count >= settings.login_lock_threshold else 0
+    locked = failed_count >= threshold
+    locked_until = now_ts() + login_lock_seconds_of(db) if locked else 0
     if row:
         db.execute(
             """
@@ -210,6 +225,12 @@ def record_login_failure(db: sqlite3.Connection, ip_address: str, username: str)
             (str(uuid4()), ip_address, key, failed_count, locked_until, now_ts()),
         )
     db.commit()
+    return {
+        "failed_count": failed_count,
+        "locked_until": locked_until,
+        "locked": locked,
+        "remaining": max(0, threshold - failed_count),
+    }
 
 
 def clear_login_failures(db: sqlite3.Connection, ip_address: str, username: str) -> None:

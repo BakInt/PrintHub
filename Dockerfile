@@ -1,10 +1,13 @@
 # syntax=docker/dockerfile:1
 
 # Stage 1: Build the Vue single-page application.
+# pnpm 版本与 frontend/package.json 的 packageManager 字段保持一致（corepack 严格校验）。
+# pnpm-workspace.yaml 必须随 package.json 一起先拷入：install 的供应链策略
+# （minimumReleaseAge）等配置就读在它里面，晚拷会让 --frozen-lockfile 落回默认策略。
 FROM node:22.18-bookworm-slim AS frontend-build
 WORKDIR /src/frontend
-RUN npm install -g pnpm@10.15.0
-COPY frontend/package.json frontend/pnpm-lock.yaml ./
+RUN npm install -g pnpm@12.11.2
+COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY frontend/ ./
 RUN pnpm run build

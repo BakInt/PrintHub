@@ -1,3 +1,4 @@
+import math
 import sqlite3
 from uuid import uuid4
 
@@ -16,6 +17,7 @@ from ..services.auth_session import (
     get_session,
     ensure_guest_session,
     make_session,
+    now_ts,
     record_login_failure,
     set_session_cookies,
     verify_captcha,
@@ -48,8 +50,27 @@ def client_ip(request: Request) -> str:
 
 
 def login_failure(db: sqlite3.Connection, ip_address: str, username: str) -> None:
-    record_login_failure(db, ip_address, username)
-    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=LOGIN_ERROR)
+    """记录一次登录失败并抛出结构化错误，前端只展示后端给的信息、不做计数：
+
+    - 普通失败：401，`detail = {"message": "用户名或密码错误，还可尝试 N 次", "remaining_attempts": N}`；
+    - 本次失败刚好触发锁定（或锁定期间重试）：429，`detail = {"message": "账号已锁定，请 N 分钟后重试",
+      "locked": true, "retry_after_minutes": N}`。
+    阈值/时长来自后台「站点设置」（services.site_settings），对任何用户名都返回同样的提示，
+    不泄露账号是否存在。
+    """
+    result = record_login_failure(db, ip_address, username)
+    if result["locked"]:
+        minutes = max(1, math.ceil((result["locked_until"] - now_ts()) / 60))
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={"message": f"账号已锁定，请 {minutes} 分钟后重试", "locked": True, "retry_after_minutes": minutes},
+        )
+    remaining = result["remaining"]
+    message = LOGIN_ERROR if remaining <= 0 else f"{LOGIN_ERROR}，还可尝试 {remaining} 次"
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail={"message": message, "remaining_attempts": remaining},
+    )
 
 
 def validate_login_payload(raw_payload: dict) -> tuple[str, str, str]:
@@ -65,7 +86,9 @@ def login_response(response: Response, db: sqlite3.Connection, user: sqlite3.Row
     destroy_session(db, old_session_id)
     session = make_session(db, user["id"])
     set_session_cookies(response, session)
-    return AuthResponse(token=create_token({"sub": user["id"]}), user=row_to_user(user))
+    # 安全修复（V-05）：token 携带签发时的 token_version，服务端可随时吊销（见 deps.current_user）。
+    token = create_token({"sub": user["id"], "ver": int(user["token_version"] or 0)})
+    return AuthResponse(token=token, user=row_to_user(user))
 
 
 @router.get("/csrf")
@@ -136,7 +159,16 @@ async def login(request: Request, response: Response, db: sqlite3.Connection = D
 
 
 @router.post("/logout")
-def logout(request: Request, response: Response, db: sqlite3.Connection = Depends(get_db)):
+def logout(
+    request: Request,
+    response: Response,
+    db: sqlite3.Connection = Depends(get_db),
+    user: sqlite3.Row = Depends(current_user),
+):
+    # 安全修复（V-05）：登出必须吊销 bearer token——token_version +1 后，所有携带
+    # 旧 token 的请求都会被 deps.current_user 拒绝（401），而不再「7 天内永久有效」。
+    db.execute("UPDATE users SET token_version = token_version + 1 WHERE id = ?", (user["id"],))
+    db.commit()
     settings = get_settings()
     destroy_session(db, request.cookies.get(settings.session_cookie_name))
     clear_session_cookies(response)

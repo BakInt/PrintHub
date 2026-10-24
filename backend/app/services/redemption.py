@@ -304,10 +304,12 @@ def batch_generate_codes(
     valid_days: int = 0,
     expires_at: str | None = None,
 ) -> list:
-    """批量生成随机兑换码，返回形如 [{id, code}, ...] 的列表。
+    """批量生成随机兑换码，返回形如 [{id, code, valid_days, expires_at}, ...] 的列表。
 
     【新增功能】有效期同样支持两种互斥方式：expires_at 传了可解析的日期就直接用它
     （并把 valid_days 记为 0），否则按 valid_days 计算，语义与 create_code() 一致。
+    返回项带最终生效的 valid_days / expires_at（永久有效时 expires_at 为 None），
+    供测试与前端批量生成结果展示使用。
     """
     amount = round(float(amount), 2)
     fixed_expires_at = normalize_expire_date(expires_at)
@@ -335,7 +337,7 @@ def batch_generate_codes(
             """,
             (code_id, code, amount, int(usable_count), stored_valid_days, stored_expires_at),
         )
-        created.append({"id": code_id, "code": code})
+        created.append({"id": code_id, "code": code, "valid_days": stored_valid_days, "expires_at": stored_expires_at})
     db.commit()
     if len(created) < count:
         raise HTTPException(status_code=500, detail="生成兑换码数量不足，请重试")

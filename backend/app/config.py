@@ -48,6 +48,7 @@ GENERATED_CONFIG_KEYS: tuple[str, ...] = (
     "session_cookie_secure",
     "rate_limit_requests",
     "rate_limit_window_seconds",
+    "sensitive_rate_limit_per_minute",
     "access_token_expire_seconds",
     "session_expire_seconds",
     "captcha_expire_seconds",
@@ -174,6 +175,9 @@ class Settings(BaseSettings):
     trusted_hosts: str = "localhost,127.0.0.1,testserver"
     rate_limit_requests: int = 120
     rate_limit_window_seconds: int = 60
+    # 安全修复（V-04）：敏感路径（/api/auth/login、/api/auth/register、/api/upload）的
+    # 专项限速（次/分钟/IP），防止爆破登录与匿名灌文件；0 表示不启用专项限速。
+    sensitive_rate_limit_per_minute: int = 10
     # 相对路径以 config 目录为基准（见 doc/AGENTS.md「存储」一节）。
     database_path: Path = Path("cloud_print.db")
     upload_dir: Path = Path("uploads")

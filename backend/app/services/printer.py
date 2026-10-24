@@ -561,6 +561,7 @@ def print_pdf(
     printer_name: str | None = None,
     default_printer: str | None = None,
     use_color: bool | None = None,
+    rasterize: bool | None = None,
 ) -> tuple[str | None, str | None]:
     """提交打印。
 
@@ -573,6 +574,13 @@ def print_pdf(
     整页光栅化（防「公式整块消失」）在三种情况下都保留，它只把矢量页渲染成位图，
     彩色模式渲染出的仍是彩色位图，不属于「转黑白」。
     Windows（SumatraPDF / PrintTo）分支暂不读取 use_color，保持原有行为不变。
+
+    【性能修复】rasterize（按需光栅化）三态语义：
+      - None（默认）：保持原有「一律光栅化」行为，兼容所有旧调用方；
+      - True：打印前整页光栅化（Office 转换件、含 SMask/Mask 遮罩的 PDF）；
+      - False：跳过光栅化，直接提交原始 PDF（纯净 PDF / 图片转换件——
+        没有透明遮罩与图元兼容性风险，省掉每页 300dpi 光栅化的几十秒耗时，
+        且保留文字矢量，打印更快更清晰）。
     """
     settings = get_settings()
     if _platform_name() == "windows":
@@ -592,8 +600,13 @@ def print_pdf(
     # 光栅化「尽力而为」：任何异常都降级为直接打印原 PDF，绝不让后处理导致打印接口 500。
     # 【新增功能】use_color=True 时传 darken=False，光栅化只去透明、不做加深/灰阶映射，
     # 保证用户勾选彩色时文件不会被转成黑白。
+    # 【性能修复】rasterize=False（纯净 PDF/图片转换件）时整段跳过，不再无条件全量光栅化。
     try:
-        rasterized_path = rasterize_pdf_for_print(pdf_path, darken=use_color is not True)
+        rasterized_path = (
+            rasterize_pdf_for_print(pdf_path, darken=use_color is not True)
+            if (rasterize is None or rasterize)
+            else None
+        )
     except Exception:
         rasterized_path = None
     if rasterized_path is not None:

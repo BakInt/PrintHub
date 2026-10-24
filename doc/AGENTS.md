@@ -15,8 +15,8 @@
 - 后端：Python 3.12、FastAPI、SQLite、Pydantic Settings、bcrypt、PyPDF2、pdf2image、Pillow。
 - 文档转换：系统安装 LibreOffice、Poppler、CUPS client、完整字体库（Noto CJK/CJK-extra、Noto Core/Extra/Mono、Liberation、Carlito、Caladea、DejaVu、STIX、Noto Color Emoji）和 `zh_CN.UTF-8`。字体映射与回退由 `docker/fontconfig/49-cloud-print-aliases.conf` 提供，把 Windows/Office 专有字体名（宋体/黑体/微软雅黑/Times New Roman/Arial/Wingdings 等）映射到已装字体，并为所有字体追加 CJK + 数学符号 + 图案符号兜底，避免转换/打印乱码。
 - 打印：CUPS 命令、Windows PowerShell/SumatraPDF 分流（已移除 mock 模拟模式）。
-- 前端：Vue 3、Vite、Vue Router、Pinia、lucide-vue-next。
-- 部署：Docker Compose 单容器。`Dockerfile` 多阶段构建（Node 构建前端 → Python 运行镜像，FastAPI 同时托管 API 与前端静态文件），`docker-compose.yml` 用 `./config:/app/config` 绑定挂载持久化，`docker/entrypoint.sh` 负责建目录与生成配置文件。仓库里没有 `install.sh`/`configure.sh`/`start.sh`/`uninstall.sh`。
+- 前端：Vue 3、Vite、Vue Router、Pinia、**Tailwind CSS v4 + shadcn-vue（reka-ui，reka-nova 风格，`typescript: false` 生成 JS 组件）**、lucide-vue-next、unovis（shadcn-vue Chart 底层）、vue-sonner（Toast）。组件一律来自 `frontend/src/components/ui/*`（shadcn-vue CLI 生成，`components.json` 驱动），页面层只用 Tailwind 工具类 + CSS 变量定制外观，禁止手写 CSS 复刻组件。品牌字/数字用自托管 Space Grotesk 变量字体（仅拉丁字符与数字，中文自动回退系统字体），文件在 `frontend/src/assets/fonts/`，由 `assets/index.css` 的 `@font-face` 与 `--font-display` 暴露。
+- 部署：Docker Compose 单容器。`Dockerfile` 多阶段构建（Node 构建前端 → Python 运行镜像，FastAPI 同时托管 API 与前端静态文件），pnpm 版本由 `frontend/package.json` 的 `packageManager` 字段固定（当前 `pnpm@12.11.2`，Dockerfile 安装同版本），`frontend/pnpm-workspace.yaml` 里 `minimumReleaseAge: 0` 关闭 pnpm 供应链发布龄期检查以保证锁文件可冻结安装——**该文件必须与 `package.json`/`pnpm-lock.yaml` 一起在 `pnpm install` 前拷入构建层**（见 Dockerfile Stage 1 注释；只拷 package.json 会让 install 落回默认 1 天龄期策略并拒绝刚发布的包）。`frontend/package.json` 里 `shadcn-vue` 是 devDependency（`assets/index.css` 的 `@import "shadcn-vue/tailwind.css"` 依赖它提供 data-* 变体等基础样式层，不要移除）。`docker-compose.yml` 用 `./config:/app/config` 绑定挂载持久化，`docker/entrypoint.sh` 负责建目录与生成配置文件。仓库里没有 `install.sh`/`configure.sh`/`start.sh`/`uninstall.sh`。
 - 存储：唯一持久化目录是配置目录 `<CONFIG_ROOT>`（容器内 `/app/config`，由 `docker-compose.yml` 绑定挂载到宿主机 `./config`）：`config.json`、`cloud_print.db`、`uploads/`、`backups/`、`logs/`、`cups-drivers/` 全在里面，备份 = 复制整个配置目录。
 - 配置优先级：环境变量 > `config.json` > 代码内建默认值。`config.json` 首次启动自动生成（含随机 `app_secret`），之后只在缺失键时补齐、绝不覆盖已有值。
 
@@ -33,7 +33,7 @@
 │   │   ├── middleware.py        # 限流、安全响应头、生产配置校验；CSRF helper 尚未在 main.py 注册
 │   │   ├── models/schemas.py    # 请求/响应 Pydantic 模型和支付方式归一化
 │   │   ├── routers/             # public/auth/files/orders/user/admin API
-│   │   ├── services/            # 文件、支付、计价、安全检测、认证会话、打印、按日统计服务
+│   │   ├── services/            # 文件、支付、计价、安全检测、认证会话、打印、按日统计、站点设置服务
 │   │   │   └── stats.py        # 后台「每日数据统计」：把 UTC 时间戳按**本地时区**聚合成每日订单数/收入/失败数
 │   │   └── utils/security.py    # bcrypt 密码哈希和自定义 HMAC token
 │   ├── tests/smoke_test.py      # 后端冒烟测试（import app.main 需要 pycups，适合容器内跑）
@@ -44,21 +44,32 @@
 │   └── run.py                   # 本地开发入口
 ├── frontend/
 │   ├── src/
-│   │   ├── App.vue
-│   │   ├── api/client.js        # fetch 封装、token 注入、CSRF token 自动携带
+│   │   ├── App.vue              # 全局壳：AppHeader + RouterView + MobileTabbar + Toaster
+│   │   ├── api/client.js        # fetch 封装、token 注入、CSRF token 自动携带（业务逻辑，勿动）
 │   │   ├── router/index.js
 │   │   ├── stores/auth.js
-│   │   ├── stores/theme.js      # 亮/暗主题状态：localStorage 记忆 + 跟随系统 + 视口判定
-│   │   ├── views/               # 首页、认证、支付、个人中心、后台
-│   │   ├── components/          # 可复用组件：DailyStatsCard.vue（后台概览「每日数据统计」卡片，内联 SVG 图表）
-│   │   ├── assets/theme.css     # 主题变量：PC 亮/暗、移动端亮/暗四套独立 palette
-│   │   └── assets/styles.css    # 组件样式（颜色一律引用 theme.css 的 var(--cp-*)）
-│   ├── index.html               # 含首屏防闪烁内联脚本（样式生效前写入 data-theme）
-│   ├── package.json
-│   ├── pnpm-lock.yaml           # 包管理器是 pnpm（Dockerfile 用 pnpm@10.15.0 --frozen-lockfile）
+│   │   ├── stores/site.js       # 站点配置（标题/favicon/备案号）：启动时拉取 /api/site-settings 并全局应用
+│   │   ├── stores/theme.js      # 亮/暗主题状态：localStorage 记忆 + 跟随系统，切换 html.dark 类
+│   │   ├── composables/useNavTargets.js  # 顶栏/底部 Tab 共用的导航目标与互斥高亮判定
+│   │   ├── views/               # 首页、认证、支付、个人中心、后台（模板用 shadcn 组件 + Tailwind）
+│   │   ├── components/
+│   │   │   ├── layout/          # AppHeader.vue / MobileTabbar.vue / ThemeToggle.vue（布局壳）
+│   │   │   ├── DailyStatsCard.vue # 后台概览「每日数据统计」卡片：shadcn Chart(Unovis) 双轴柱线图
+│   │   │   └── ui/              # shadcn-vue CLI 生成的官方组件（button/card/dialog/sidebar/chart/...，勿手改外观）
+│   │   ├── lib/utils.js         # cn()（clsx + tailwind-merge），shadcn-vue 生成
+│   │   └── assets/
+│   │       ├── index.css        # 唯一全局样式：Tailwind 入口 + CSS 变量主题（亮/暗两套）+ @font-face
+│   │       └── fonts/           # 自托管 Space Grotesk 变量字体（仅 latin 子集，供品牌字/数字）
+│   ├── index.html               # 含首屏防闪烁内联脚本（样式生效前切换 html.dark 类）、内联 SVG favicon、meta/og/theme-color
+│   ├── components.json          # shadcn-vue CLI 配置（reka-nova 风格、JS 模式、别名 @/*）
+│   ├── jsconfig.json            # @/* → src/* 路径别名
+│   ├── vite.config.js           # @vitejs/plugin-vue + @tailwindcss/vite + @ 别名 + /api 代理
+│   ├── package.json             # 含 packageManager（pnpm@12.11.2）与 "type": "module"
+│   ├── pnpm-lock.yaml           # 包管理器是 pnpm（Dockerfile 用 pnpm@12.11.2 --frozen-lockfile）
+│   ├── pnpm-workspace.yaml      # minimumReleaseAge: 0（构建可复现，见 §2）
 │   └── nginx.conf               # 旧的独立 Nginx 配置，仅备用（生产由 FastAPI 托管前端）
 ├── scripts/test_printer.py      # 命令行测试样张脚本
-├── scripts/theme_*.py           # 主题化工具（tokenize/check/audit/class_audit 等），不参与运行
+├── scripts/theme_*.py           # 旧版手写 CSS 时代的主题检查工具，针对 var(--cp-*) 编写，已废弃不参与运行
 ├── Dockerfile                   # 多阶段构建：Node 构建前端 → Python 运行镜像（FastAPI 同时托管前端）
 ├── docker-compose.yml           # 单容器；./config:/app/config 绑定挂载持久化
 ├── docker/                      # entrypoint.sh、fontconfig 字体映射、nginx 配置（备用）
@@ -75,7 +86,7 @@
 `backend/app/main.py` 创建 FastAPI 应用：
 
 1. 导入时先调用 `bootstrap()`（`backend/app/bootstrap.py`）：确保配置目录里存在 `config.json`（缺失就按默认值生成、含随机 `app_secret`）并创建数据库/上传/备份/日志/CUPS 驱动目录；随后 `get_settings()` 读取配置并打印配置目录、配置文件、数据库位置。
-2. 注册 CORS、限流、TrustedHost 和安全响应头中间件，并注册全局兜底异常处理 `@app.exception_handler(Exception)`：未捕获异常记录堆栈后返回 `{"detail": "服务器内部错误，请稍后重试"}` 的 JSON，避免前端只拿到 FastAPI 默认的纯文本 500 "Internal Server Error"。
+2. 注册 CORS、限流、TrustedHost 和安全响应头中间件，并注册全局兜底异常处理 `@app.exception_handler(Exception)`：未捕获异常记录堆栈后返回 `{"detail": "服务器内部错误，请稍后重试"}` 的 JSON，避免前端只拿到 FastAPI 默认的纯文本 500 "Internal Server Error"。FastAPI 文档端点（`/docs`、`/redoc`、`/openapi.json`）只在 `environment=development` 时开启，其它环境一律禁用，不对外暴露 API 定义（安全修复 V-06）。
 3. 启动时先调用 `_warn_data_outside_config_root()`（容器里若数据库/上传等路径跑到配置目录之外会打印警告，提示重建容器会丢数据），再调用 `validate_production_config(settings)`、`init_db()`、`start_print_status_monitor()`、`start_auto_backup_scheduler()`。
 4. 注册路由：`public`、`auth`、`files`、`orders`、`admin`、`admin.setup_router`、`user`。
 5. 在所有路由之后注册前端静态文件服务（`/assets`、`/static`）和 catch-all 路由。
@@ -86,13 +97,14 @@
 - 通过 `SCHEMA_MIGRATIONS` 给旧库补列，新增表通过 `CREATE TABLE IF NOT EXISTS` 创建。
 - 打印机能力列：`printers.is_support_color INTEGER DEFAULT 0`（是否支持彩色打印）、`printers.is_support_auto_duplex INTEGER DEFAULT 1`（是否支持自动双面打印）；`SCHEMA_MIGRATIONS["printers"]` 同步补 `"is_support_color": "INTEGER DEFAULT 0"`、`"is_support_auto_duplex": "INTEGER DEFAULT 1"`。旧库升级后彩色默认关闭（保持「旧版不展示彩色」）、自动双面默认开启（保持升级后旧行为不变）。
 - 订单彩色列：`orders.use_color INTEGER`（**故意不带 DEFAULT**），`SCHEMA_MIGRATIONS["orders"]` 补 `"use_color": "INTEGER"`。语义：NULL=旧数据/旧前端未指定（完全走原有黑白流程）、1=用户选择彩色、0=用户选择黑白。
+- 订单合并双面列：`orders.merge_duplex INTEGER DEFAULT 0`，`SCHEMA_MIGRATIONS["orders"]` 同步补 `"merge_duplex": "INTEGER DEFAULT 0"`。语义：0/NULL=按份打印（历史订单行为不变）、1=全部文档合并为一个双面打印流（打印派发据此走合并分支，见 6.3/6.7）。
 - 写入默认设置：计价模式、单双面价格、按覆盖率计价基础价、阶梯折扣、每日限时特价、最低余额、安全覆盖率阈值、文件大小限制、最大页数、支付配置、默认打印机。
 - 初始化时删除旧库遗留的 `print_mode` 设置键（打印模式配置已整体移除，避免它在后台设置接口里回显）。
 - 初始化管理员账号。用户名/密码取 `config.json` 的 `admin_username` / `admin_password`（默认 `admin` / `admin123456`）；`reset_admin_password=true` 时下次启动会把已有管理员密码强制改回该值并自动写回 `false`。
 
 注意：`get_settings()` 不再用 `@lru_cache`，而是按 `config.json` 的 `mtime`/`size` 指纹热加载——改完配置文件无需重启即生效（`reload_settings()` 可强制重读）。优先级仍是「环境变量 > config.json > 内建默认值」，所以测试里改环境变量仍要在导入 `app.main` 之前设置。
 
-`config.json` 里的部署级键：`environment`、`app_secret`、`database_path`、`upload_dir`、`backup_dir`、`log_dir`、`cups_driver_dir`、`trusted_hosts`、`cors_origins`、`session_cookie_secure`、限流与会话有效期、`admin_username`/`admin_password`/`reset_admin_password`、`cups_job_timeout_seconds`、`printer_probe_timeout_seconds`、`print_status_check_interval_seconds`、`print_confirm_timeout_seconds`。相对路径按配置目录归一，整个目录搬家后配置依然有效。业务配置（价格、促销、阈值、上传限制、支付、CUPS、默认打印机）不在这个文件里，它们在 SQLite 的 `settings` 表、以后台页面为准；`cups_*`/`epay_*` 只在首次建库时从 `config.json` 播种进数据库。
+`config.json` 里的部署级键：`environment`、`app_secret`、`database_path`、`upload_dir`、`backup_dir`、`log_dir`、`cups_driver_dir`、`trusted_hosts`、`cors_origins`、`session_cookie_secure`、限流与会话有效期（含敏感路径专项限速 `sensitive_rate_limit_per_minute`，默认 10 次/分钟/IP，作用于登录/注册/上传，0=关闭）、`admin_username`/`admin_password`/`reset_admin_password`、`cups_job_timeout_seconds`、`printer_probe_timeout_seconds`、`print_status_check_interval_seconds`、`print_confirm_timeout_seconds`。相对路径按配置目录归一，整个目录搬家后配置依然有效。业务配置（价格、促销、阈值、上传限制、支付、CUPS、默认打印机）不在这个文件里，它们在 SQLite 的 `settings` 表、以后台页面为准；`cups_*`/`epay_*` 只在首次建库时从 `config.json` 播种进数据库。
 
 ## 5. 认证和会话
 
@@ -103,7 +115,12 @@
 - `GET /api/auth/csrf` 会创建访客会话并返回 CSRF token；前端非安全方法会自动携带 `X-CSRF-Token`。
 - 当前 `main.py` 没有注册 `csrf_middleware`，所以 CSRF token 目前是前端兼容性准备，不是已启用的后端强制校验。
 - 登录成功会同时设置 HTTP-only session cookie 和返回自定义 HMAC bearer token。`current_user()` 优先解析 `Authorization: Bearer ...`，没有 token 时回退到 session cookie。
-- 登录失败按 IP + 用户名累计，达到 `LOGIN_LOCK_THRESHOLD` 后在 `LOGIN_LOCK_SECONDS` 内仍返回统一错误“用户名或密码错误”。
+- **Bearer token 服务端吊销（安全修复 V-05）**：`users.token_version`（`SCHEMA` + `SCHEMA_MIGRATIONS`，默认 0）是令牌版本号，登录签发的 token 携带 `ver`，`current_user()` 比对不一致（或旧 token 无 `ver`）即 401。登出（`POST /api/auth/logout` 现在要求登录）、管理员改密/封禁用户时版本号 +1，旧 token 立即失效。改认证时不要丢掉这条链路。
+- 登录失败按 IP + 用户名累计，达到阈值后在锁定时长内拒绝；锁定期间返回 **429**（安全修复 V-04），非锁定失败仍返回统一 401「用户名或密码错误」。2026-10 起登录失败响应为**结构化 detail**，前端只展示后端给的信息、不做计数：
+  - 普通失败：401，`detail = {"message": "用户名或密码错误，还可尝试 N 次", "remaining_attempts": N}`；
+  - 达到阈值（含锁定期间重试）：429，`detail = {"message": "账号已锁定，请 N 分钟后重试", "locked": true, "retry_after_minutes": N}`。
+  - 阈值/时长来自**站点设置**（数据库 `settings` 表的 `login_lock_threshold`/`login_lock_minutes`，后台「站点设置」页可改；建库时从 `config.json` 的 `login_lock_threshold`/`login_lock_seconds` 播种，缺键/非法值回退 config.json），读取逻辑在 `services/site_settings.py`，保存后下一笔登录请求即生效。对任何用户名都返回同样的提示，不泄露账号是否存在。
+- 敏感路径专项限速（安全修复 V-04）：`/api/auth/login`、`/api/auth/register`、`/api/upload` 按 IP 限制 `sensitive_rate_limit_per_minute`（config.json 部署级键，默认 10 次/分钟，0=关闭），实现在 `middleware.py` 的 `RateLimitMiddleware._limit_for_path()`；全局默认仍是 `rate_limit_requests` 次/窗口。
 - 管理员接口通过 `admin_user()` 检查 `is_admin`，普通用户会返回 403“无效请求”。
 
 ## 6. 核心业务流
@@ -151,7 +168,9 @@
 
 入口：`GET /api/files/{file_id}/preview`。
 
-后端返回 PDF `FileResponse`，`Content-Disposition` 为 inline。前端首页和后台订单详情都用 `iframe` 预览 PDF。缓存被清理后，预览接口会返回 404。
+后端返回 PDF `FileResponse`，`Content-Disposition` 为 inline。前端首页点文件行的眼睛图标后，用 shadcn `Dialog`（`DialogScrollContent`）**弹窗内的 `iframe`** 预览 PDF——弹窗居中弹出、标题显示文件名，关闭弹窗（X 按钮 / Esc / 点遮罩）即清空 `previewFile` 并卸载 iframe；移除正在预览的文件时同样会关闭弹窗。后台订单详情则在订单详情 `Dialog` 内点文件行的「预览」按钮加载 `iframe`。缓存被清理后，预览接口会返回 404。
+
+**文件归属校验（安全修复 V-07）**：`/api/files/{file_id}/preview`、`POST /api/check-safety`、`POST /api/price`（file_ids 模式）与 `POST /api/payment/create` 都通过归属检查——已归属登录用户的文件只有属主或管理员可读/可引用（越权一律 404/403，与「不存在」同响应，不泄露他人 file_id 存在性）；匿名访客上传的文件（`files.user_id` 为 NULL）保持公开，以支撑访客打印流程。核心实现在 `routers/files.py` 的 `ensure_file_readable()` 与 `routers/orders.py` 的 `ensure_files_accessible()`，`public.py` 复用后者。iframe 预览不带 Authorization 头，靠登录时种下的 session cookie 回退鉴权。
 
 ### 6.3 计价和促销
 
@@ -162,14 +181,13 @@
 - `standard`：单面按 `page_count * copies * single_price`，双面按 `ceil(page_count / 2) * copies * duplex_price`。
 - `coverage_tiered`：按每页黑色覆盖率分档乘以基础价，单面使用 `coverage_single_base_price`，双面使用 `coverage_duplex_base_price`。
 
-自动双面（按份独立）：
+合并双面打印（跨文档，2026-10 起**取代**旧的「按份独立双面」功能）：
 
-- 「自动双面」的定义是——批量上传多份文档时，用户为每份文档单独选择是否双面。启用后仅把该份多页文档的内容打印在同一张纸的正反两面。
-- 双面不会跨文档合并：两份单页文档不会被合并到同一张 A4 纸的正反面；每份单页文档只能单面。
-- `POST /api/price` 与 `POST /api/payment/create` 都接受按份设置 `file_settings`（`[{file_id, double_sided}]`）；未在其中出现的文件回退到全局 `double_sided`（历史兼容）。
-- `PrintSettings.use_auto_duplex`（`bool | None`）是全局双面回退值：非 None 时取代全局 `double_sided` 作为未单独设置文档的回退值，逐份 `file_settings.double_sided` 仍然优先；None 表示旧前端未携带，完全沿用原逻辑。
-- `calculate_files_price_detail()` 逐份文档按自身页数与自身单/双面折算张数与金额后求和；`resolve_file_double_sided()` 对页数 < 2 的文档强制单面。
-- 若请求为某份页数 < 2 的文档启用双面，`create_order` 返回 400。
+- 「合并双面打印」的定义是——用户在前台勾选后，本次订单的**全部文档按上传顺序合并为一个双面打印流**：不同文档的页面连续排到纸张正反面，两份单页文档可以打在同一张 A4 纸的正反两面（这正是旧版按份双面做不到的能力）。
+- 计价：张数按 `ceil(总页数/2) × 份数` 折算，标准模式整单使用双面价（`duplex_price`）；覆盖率模式仍逐页按覆盖率分档计价（合并不改变每页单价），整单使用双面基础价（`coverage_duplex_base_price`）。合计只有 1 页时按 1 张双面价计（实际只打正面），**不再返回 400**。
+- `POST /api/price` 与 `POST /api/payment/create` 都接受布尔 `merge_duplex`（缺省 False=全部单面）。旧的按份字段 `double_sided`/`file_settings`/`use_auto_duplex` 已从 `PrintSettings` 与 `/api/price` 的 file_ids 模式移除（pydantic 忽略未知字段，旧客户端携带也不会报错，只会按单面处理）；`/api/price` 的 page_count 旧模式仍保留 `double_sided` 参数。
+- `calculate_files_price_detail(db, files, copies, merge_duplex=False)`：False 时全部文档按单面逐页求和；True 时走合并双面分支（`_merged_duplex_base_amount()`）。返回 detail 额外携带 `merge_duplex` 与 `total_pages`（各文档页数之和）。`resolve_file_double_sided()` 已删除。
+- 打印派发：`orders.merge_duplex=1` 时 `dispatch_order_print()` 用 `pdf_postprocess.merge_pdfs()` 把全部 `order_items` 的 PDF 按下单顺序合并成一个临时 PDF，作为一个双面任务（`double_sided=True`）调用一次 `print_pdf()`，提交后删除临时文件；合并或打印失败整单置为 `print_failed`。`merge_duplex=0/NULL` 走原有逐份循环（历史订单行为不变）。
 
 折扣规则：
 
@@ -185,11 +203,11 @@
 
 流程：
 
-1. 校验文件 ID 非空、无重复、文件存在且全部安全。
-2. 解析按份双面：`file_settings` 中指定的文件用其独立设置，其余回退全局 `double_sided`（`print_settings.use_auto_duplex` 非 None 时改以它作为回退值，逐份设置仍优先）；对任一被请求双面但页数 < 2 的文档返回 400，文案为「双面打印仅适用于自身页数不少于 2 页的文档，单页文档只能单面打印」。
-3. 调用 `calculate_files_price_detail()` 逐份汇总价格；每份文档的生效双面值写入 `order_items.is_double_sided`，`orders.is_double_sided` 作为「是否含双面文档」的聚合标识；`use_color` 写入 `orders.use_color`（None=未指定 / 1=彩色 / 0=黑白）。
+1. 校验文件 ID 非空、无重复、文件存在且全部安全；再做**文件归属校验**（安全修复 V-07，`ensure_files_accessible()`）：只能引用自己的文件或匿名访客上传的文件（`user_id` 为 NULL），引用他人文件返回 403「存在不可用的文件，请重新上传后再试」。
+2. 解析合并双面：`print_settings.merge_duplex`（布尔，缺省 False）。True 时全部文档合并为一个双面打印流计价与派发，不再有「单页文档 400 拒绝」逻辑。
+3. 调用 `calculate_files_price_detail()` 汇总价格；合并双面时 `order_items.is_double_sided` 全部写 1（仅作后台展示），合并派发的真正依据是 `orders.merge_duplex=1`；`orders.is_double_sided` 仍作为「双面订单」的聚合展示标识；`use_color` 写入 `orders.use_color`（None=未指定 / 1=彩色 / 0=黑白）。
 4. 联系人姓名和手机号必填。登录用户可从 `users.real_name`、`users.phone` 自动补齐；手机号要求中国大陆 11 位格式。
-5. 打印机能力兜底校验（`resolve_order_printer()` 按订单解析目标打印机，未指定则取默认打印机；查不到打印机记录时跳过校验以兼容老部署）：`print_settings.use_color is True` 但该打印机 `is_support_color=0` → 400「该打印机未开启彩色打印，请重新选择打印方式」；订单含双面但该打印机 `is_support_auto_duplex=0` → 400「该打印机未开启自动双面打印，请重新选择打印方式」。前端已按能力条件渲染，这里是防止绕过的兜底。
+5. 打印机能力兜底校验（`resolve_order_printer()` 按订单解析目标打印机，未指定则取默认打印机；查不到打印机记录时跳过校验以兼容老部署）：`print_settings.use_color is True` 但该打印机 `is_support_color=0` → 400「该打印机未开启彩色打印，请重新选择打印方式」；勾选了合并双面（`merge_duplex=True`）但该打印机 `is_support_auto_duplex=0` → 400「该打印机未开启自动双面打印，请重新选择打印方式」。前端已按能力条件渲染，这里是防止绕过的兜底。
 6. 如果是余额支付：
    - 必须登录。
    - 校验支付后余额不能低于 `min_balance`。
@@ -236,7 +254,7 @@
 
 `printer.print_pdf()` 不再接收 `print_mode` 参数，签名为 `print_pdf(pdf_path, copies, double_sided, printer_name=None, default_printer=None, use_color: bool | None = None)`；`print_jobs_active(job_ids)` 也不再接收打印模式。
 
-`dispatch_order_print()` 会根据订单的 `printer_name`、settings 中的 `default_printer` 和份数，并逐份读取 `order_items.is_double_sided` 作为该文件的单双面参数调用 `print_pdf()`。成功后订单状态更新为 `printing`，失败则为 `print_failed` 并写入 `print_error`。
+`dispatch_order_print()` 会根据订单的 `printer_name`、settings 中的 `default_printer` 和份数下发打印。`orders.merge_duplex=1`（合并双面打印单）时，先用 `pdf_postprocess.merge_pdfs()` 把全部 `order_items` 的 PDF 按下单顺序合并成一个临时 PDF，作为单个双面任务调用一次 `print_pdf()`（不同文档的页面连续排到纸张正反面），提交后删除临时文件；`merge_duplex=0/NULL`（历史订单）保持逐份读取 `order_items.is_double_sided` 作为该文件的单双面参数分别调用 `print_pdf()`。成功后订单状态更新为 `printing`，失败（含合并失败）则为 `print_failed` 并写入 `print_error`。
 
 `print_pdf()`（CUPS 路径）在用 `lp` 提交前会调用 `rasterize_pdf_for_print()`（见 `backend/app/services/pdf_postprocess.py`），用 poppler `pdftoppm` 把待打印 PDF 每页光栅化成 300dpi 不透明位图并重组为「纯图像 PDF」再提交。这样远端 CUPS/打印机的 RIP 只需绘制不透明图片，彻底规避老式 OLE 公式/WMF/EMF/透明图元在远端 RIP 上被整块丢弃的「上传打印后化学式消失」问题（详见 6.1）。它仅作用于打印副本、不改动入库/预览的原始 PDF，页数页序不变，光栅化失败会安全降级为直接打印原 PDF；打印任务提交后本地临时图像 PDF 会被删除。光栅化每页还会经 `_darken_faint_content()` 套分段灰度 LUT，把老式公式预览图的中灰笔画压到纯黑、保护白底不发灰，解决「公式打印出来颜色很淡」（详见 6.1）。Windows 走 SumatraPDF/`PrintTo`，本身就是本地整页光栅化，不额外处理。
 
@@ -277,9 +295,11 @@
 
 - `GET /api/health`：健康检查。
 - `GET /api/ready`：数据库就绪检查。
+- `GET /api/site-settings`：公开站点配置（网页标题 `site_title`、favicon 地址 `site_favicon_url`、ICP 备案号 `site_icp_number`），前端应用启动时拉取一次并全局应用；字段留空表示使用前端默认值。存取逻辑在 `services/site_settings.py`（`settings` 表 key-value）。
+- `GET /api/site/favicon`：输出后台上传的站点图标字节流（未设置时 404）；地址带版本戳 `?v=N` 供长缓存。
 - `GET /api/promotions`：前台展示当前促销。
 - `GET /api/limits`：前台读取生效的上传限制（`max_file_size_mb`、`max_pages`）；优先取后台设置，缺省回退环境变量默认值。首页用它渲染上传提示文案。
-- `GET /api/print-options`：前台读取当前（默认）打印机的打印能力，返回 `{"printer_name", "printer_configured", "is_support_color", "is_support_auto_duplex"}`；取 `settings` 表的 `default_printer`，未配置默认打印机或查不到该打印机记录时 `printer_configured=false` 且两项能力均为 false。首页用它做条件渲染，不硬编码。
+- `GET /api/print-options`：前台读取当前（默认）打印机的打印能力，返回 `{"printer_configured", "is_support_color", "is_support_auto_duplex"}`；取 `settings` 表的 `default_printer`，未配置默认打印机或查不到该打印机记录时 `printer_configured=false` 且两项能力均为 false。首页用它做条件渲染，不硬编码。**安全修复（V-10.1）：不再返回 `printer_name`**，避免向匿名访客泄露具体打印机名称。
 - `POST /api/price`：按页数或文件列表、份数、单双面计算价格。
 
 认证接口：
@@ -287,20 +307,22 @@
 - `GET /api/auth/csrf`：创建/读取访客会话和 CSRF token。
 - `GET /api/auth/captcha`：生成验证码 PNG。
 - `POST /api/auth/register`：用户名/密码/验证码注册，可带邮箱/手机号。
-- `POST /api/auth/login`：登录并返回 token。
-- `POST /api/auth/logout`：销毁会话并清除 cookie。
+- `POST /api/auth/login`：登录并返回 token（携带签发时的 `token_version`）。
+- `POST /api/auth/logout`：**需要登录**（bearer 或 session 均可）；销毁会话、清除 cookie，并把当前用户 `token_version` +1 吊销其全部 bearer token（安全修复 V-05）。
 - `GET /api/auth/me`：读取当前用户。
+
+首次部署恢复接口（`/api/setup/restore/*`，路由在 `routers/admin.py` 的 `setup_router`）：`GET /api/setup/restore/status` **安全修复（V-01）**——仅当系统完全未初始化（users/files/orders/payments 全空）时返回 `{"available": true}`（登录页 `AuthView.vue` 的恢复流程依赖它）；系统已有数据时一律 401，不向匿名访客泄露初始化状态。`POST /api/setup/restore/inspect` 与 `POST /api/setup/restore` 由 `services/backup.py` 的 `is_initial_restore_available()` 守门：未初始化时允许匿名（首次部署恢复），已初始化时返回 403 提示走管理员后台。
 
 文件接口：
 
-- `POST /api/upload`：上传、转换、检测并入库。
+- `POST /api/upload`：上传、转换、检测并入库。匿名上传保留（访客打印核心流程），但受敏感路径专项限速（默认 20 次/分钟内按 `sensitive_rate_limit_per_minute` 配置）且文件归属上传者（登录用户）或标记为 guest（`user_id` NULL）；畸形/损坏文件转换失败统一返回 400「文件无法解析…」而非 500（安全修复 V-10.2）。
 - `GET /api/files/{file_id}/preview`：PDF inline 预览。
 - `POST /api/check-safety`：读取某文件安全检测结果。
 
 订单和支付：
 
 - `POST /api/payment/create`：创建打印订单。
-- `GET /api/orders/{order_id}`：查询订单，并在必要时刷新打印状态。
+- `GET /api/orders/{order_id}`：查询订单，并在必要时刷新打印状态。**匿名/非属主访问只返回状态摘要字段**（`ANONYMOUS_ORDER_FIELDS`：id、order_type、status、total_amount、copies、is_double_sided、use_color、sheet_count、created_at、paid_at、printed_at、print_error + queue），不泄露 user_id、联系人姓名/手机号、支付与计价明细；属主（bearer/session 均可）和管理员拿全量（安全修复 V-03）。支付结果页匿名轮询只消费摘要字段。
 - `GET /api/payment/submit/{order_id}`：返回易支付自动提交页。
 - `GET|POST /api/payment/notify`：易支付异步回调。
 - `GET /api/payment/return/{order_id}`：易支付同步返回并跳回前端。
@@ -319,19 +341,20 @@
 - `/users`：创建、编辑、启停、删除用户，余额增减或设置；保护最后一个管理员和当前管理员。
 - `/redemptions`：手动新增（`code` 可留空，留空由后端自动生成随机码；可传 `per_user_max_times` 设置「每个用户最大兑换次数」，正整数=限制、0 或缺省=不限制；有效期用 `expiry_mode`（`days`/`date`）+ `expire_date` 二选一）、批量随机生成（同样支持 `expiry_mode`/`expire_date`）、列表与搜索、兑换记录、删除；详见 6.8。
 - `/settings`：系统价格、促销、阈值、文件大小/页数上限和默认打印机。接口保存后会返回 `notices`，提示哪些键（`cups_*`/`epay_*`）的实际值来自建库时写入的 `config.json` 快照、之后再改 `config.json` 不会覆盖后台设置（库优先）；**后台页面不再展示这些 notices**（否则成功保存也会出现红色提示），保存成功只在页面顶部显示绿色「保存成功」。
+- `/site-settings`：站点设置（后台「站点设置」页）。`GET` 回显全部字段（含 `site_favicon_mode`、`site_favicon_effective_url` 生效地址、`login_lock_threshold`/`login_lock_minutes`）；`PUT` 只更新传入的键（`SiteSettingsUpdate` 全字段可选），保存后立即生效并返回最新回显；`POST /site-settings/favicon` 上传 `.ico`/`.png` 图标（≤200KB，按文件头魔数校验），以 data URI 存入 `settings` 表并立即切换为 upload 模式。`site_favicon_mode=upload` 只能由上传接口写入，PUT 直接传会被 400 拒绝。
 - `/payment-settings`、`/payment-test`：易支付配置、配置校验、测试单查询和模拟成功。
 - 打印机管理（实现于 `backend/app/services/cups_printer.py`）：`/printer-system`（运行环境与 CUPS 连通性诊断）、`/printers`（枚举真实队列）、`/printer-drivers` 与 `/printer-drivers/ppd`（驱动列表与上传 PPD）、`/printer-info`、`/printer-uri/probe`、`/printers/{name}`（查询/编辑/删除）、`/printers/{name}/default`、`/printers/default/clear`、`/printers/{name}/enabled`、`/printers/{name}/test-page`、`/printers/{name}/test-result`、`/printers/{name}/jobs`、`/cups/logs`、`/cups/queues`、`/cups/diagnostics`。打印机配置记录带 `is_support_color`、`is_support_auto_duplex` 两个能力字段，`GET /api/admin/printers`（列表）与 `GET /api/admin/printers/{printer_name}`（详情）都会返回；编辑走 `PATCH|PUT /api/admin/printers/{printer_name}`（payload 为 `PrinterUpdate`，两项能力为可选 `bool | None`，None=不修改），本仓库没有新增打印机的 POST 路由。
 - `/alerts/{id}/handle`：处理异常告警。
 
 ## 8. 前端结构和页面
 
-`frontend/src/App.vue` 是全局壳，顶部导航根据 `auth.user` 显示个人中心、后台和退出按钮（「后台」链接与「退出」之间是亮/暗主题切换按钮 `.theme-toggle`，点击调用 `theme.toggleTheme()`）。应用启动时调用 `auth.loadMe()`。
+`frontend/src/App.vue` 是全局壳：`<a class="sr-only">` 键盘跳转入口（focus 时出现，指向 `#main-content`），`<AppHeader />` 顶栏（品牌 logo 徽标内嵌 lucide Printer 图标 + 文案「PrintHub 云打印」，桌面端 md+ 显示文字导航：打印/订单/个人中心/后台，右侧是 `ThemeToggle` 亮暗切换按钮与登录/退出按钮），`<MobileTabbar />` 手机端（< md）底部三格 Tab（首页/订单/我的，admin 路由下不渲染），以及全局 `<Toaster />`（vue-sonner 轻提示）。导航目标与互斥高亮由 `src/composables/useNavTargets.js` 提供（`ordersTarget`/`mineTarget` 带 `?tab=`，`isOrders`/`isMine` 互斥，规避 RouterLink 按路径自动高亮忽略 query 的坑）。应用启动时调用 `auth.loadMe()` 和 `site.load()`（后者拉取 `GET /api/site-settings` 并全局应用网页标题、favicon、备案条——登录页/前台/后台共用，见 `stores/site.js`；favicon 通过替换唯一的 `<link rel="icon">` 生效，未配置时回退 index.html 的内联 SVG 与默认标题）。前台路由在 `<main>` 内 RouterView 之后渲染 `<IcpFooter />`（ICP 备案条：仅当后台填写了备案号才渲染，非固定定位随内容排在页尾，居中小字、`text-muted-foreground`，点击在新窗口打开 `https://beian.miit.gov.cn/`；手机端位于底部 Tab 栏预留 padding 之内侧，不会重叠）；后台路由的备案条由 AdminView 自己在内容底部渲染。**后台路由（/admin）分支**：`main` 在 admin 路由下移除 `max-w-7xl` 限宽与内边距（后台由 AdminView 的 SidebarProvider 全高布局撑满视口；这个分支不能省——否则整个后台被前台居中盒框住，固定定位的侧边栏会与其占位 div 错位）。
 
-亮/暗主题：`frontend/src/stores/theme.js` 维护主题状态（`localStorage['cloud-print-theme']` 优先，未选择过则跟随 `prefers-color-scheme` 并实时监听系统变化；同时用 `matchMedia('(max-width: 767px)')` 判定手机端），把结果写到 `documentElement` 的 `data-theme`。变量层在 `frontend/src/assets/theme.css`，**PC 电脑端与移动手机端各有独立的亮/暗两套 palette，不共用一套 CSS 控制两端**；组件样式只引用 `var(--cp-*)`。`frontend/index.html` 的 `<head>` 内联脚本在样式生效前写入 `data-theme` 防首屏闪烁。详见 `doc/UI_ADAPTATION.md` 第 5.5 节。
+亮/暗主题：`frontend/src/stores/theme.js` 维护主题状态（`localStorage['cloud-print-theme']` 优先，未选择过则跟随 `prefers-color-scheme` 并实时监听系统变化），通过**切换 `<html>` 上的 `.dark` 类**生效（shadcn-vue CSS 变量主题方案）。变量层在 `frontend/src/assets/index.css`（`:root` 亮色块 + `.dark` 暗色块，shadcn 全套 token + 品牌 `--primary`/`--chart-1..5`/语义 `--success`/`--warning`/`--brand-*`）；页面与组件一律用 Tailwind 工具类（`bg-card`、`text-muted-foreground` 等，编译后指向 CSS 变量），**禁止写死色值**。`frontend/index.html` 的 `<head>` 内联脚本在样式生效前切换 `.dark` 类防首屏闪烁；`html.theme-ready` 后才开启 0.25s 颜色过渡（尊重 `prefers-reduced-motion`）。详见 `doc/UI_ADAPTATION.md` 第 5.5 节。
 
 路由在 `frontend/src/router/index.js`：
 
-- `/`：`HomeView.vue`，上传、文件列表、促销展示、PDF 预览、联系人、打印设置、计价和下单。
+- `/`：`HomeView.vue`，上传、文件列表、促销展示、PDF 弹窗预览（点眼睛图标以 `Dialog` 弹窗居中展示，不再在页面底部展开）、联系人、打印设置、计价和下单。
 - `/login`：`AuthView.vue`，登录和注册合并在同一页面，验证码用 Blob URL 渲染。
 - `/payment/:orderId`：`PaymentView.vue`，查询并展示订单状态。
 - `/user/dashboard`：`DashboardView.vue`，余额、资料绑定、充值、最近订单。
@@ -355,8 +378,10 @@
 - 只把 `safe` 文件纳入计价和下单。
 - 拉取 `/api/promotions` 展示阶梯折扣和限时特价。
 - 拉取 `/api/limits` 显示生效的单文件大小与页数上限（取不到时回退为「以系统设置为准」）。
-- 拉取 `/api/print-options`（`onMounted` 的 `loadPrintOptions()`，同时加入价格试算 watch 依赖）：只有 `is_support_color` 为 true 才展示「彩色打印」卡片（黑白/彩色分段选择器，默认黑白）；只有 `is_support_auto_duplex` 为 true 才展示「自动双面」卡片、文件行内的「自动双面（本份文档正反面）」勾选框与底部说明。不支持时对应 UI 完全隐藏，且不会向请求里带该能力（`file_settings.double_sided` 一律为 false）。
-- 提交 `POST /api/payment/create` 时，仅在打印机支持对应能力时才在 `print_settings` 中携带 `use_color`（用户是否选彩色）与 `use_auto_duplex`（用户是否选择了自动双面），不支持时保持与旧版一致的请求结构。
+- 拉取 `/api/print-options`（`onMounted` 的 `loadPrintOptions()`，同时加入价格试算 watch 依赖）：只有 `printer_configured` 且 `is_support_color` 为 true 才展示「彩色打印」卡片（黑白/彩色分段选择器，默认黑白）；只有 `printer_configured` 且 `is_support_auto_duplex` 为 true 才展示「合并双面打印」勾选卡片。不支持时对应 UI 完全隐藏。
+- 首屏 GET（`/api/promotions`、`/api/limits`、`/api/print-options`）经 `fetchWithRetry()` 做最多 2 次重试（间隔 800ms），上传文件时若 `printOptions`/`uploadLimits` 仍缺失会兜底补拉一次——避免页面打开瞬间恰逢后端重启导致这些请求失败后，双面/彩色选项与上传限制提示整个会话静默消失。失败时前端**不显示任何提示文字**（按产品约定保持界面极简，选项直接隐藏）。
+- 「合并双面打印」是侧栏一个极简 `Checkbox` 卡片，只显示「合并双面」文字与勾选框（**不显示任何说明文字或提示**）：勾选后把 `print_settings.merge_duplex` 置 true，全部安全文档按上传顺序合并为一个双面打印流，不同文档的页面连续排到纸张正反面（两份单页文档可打在同一张纸正反面）。合计页数 < 2 时勾选框禁用；文件变化导致不可用时自动取消勾选。价格试算把 `merge_duplex` 传给 `POST /api/price`，预估金额实时反映合并双面的张数与双面价。
+- 提交 `POST /api/payment/create` 时，仅在打印机支持对应能力时才在 `print_settings` 中携带 `use_color`（用户是否选彩色）与 `merge_duplex`（用户是否勾选合并双面），不支持时保持与旧版一致的请求结构。
 - 余额支付按钮只对登录用户可用。
 - 非余额支付创建订单后，跳到后端返回的 `/api/payment/submit/{order_id}`。
 - 余额支付创建成功后进入 `/payment/{order_id}` 查看状态。
@@ -367,13 +392,15 @@
 - 支持支付宝/微信充值，成功创建充值单后跳转到后端支付提交页。
 - 从 `recharge_order` query 返回时会刷新用户信息和订单列表。
 
-`AdminView.vue` 是目前最大的前端文件，集中实现后台所有 tab。修改后台时优先复用现有 `runAction()`、`loadTab()`、`showFeedback()` 模式，避免引入不一致的状态管理方式。**手机端导航**：后台共 8 个 tab，窄屏底部放不下，因此在桌面侧边栏 `</aside>` 之后、`.panel.admin-panel` 之前加了后台自己的底部 Tab 栏 `<nav class="admin-tabbar">`（`grid-template-columns: repeat(5, 1fr)`）：前 4 格是常用 tab（`MOBILE_PRIMARY_TAB_KEYS = ['dashboard', 'orders', 'users', 'settings']`，来自 `primaryTabs` computed，图标 22px + 文案），第 5 格是「更多」按钮，其余 4 个 tab（`moreTabs` computed：支付/兑换码/备份/打印机）收进从底部浮出的「更多」面板（`.admin-more-mask` 遮罩 + `.admin-more-sheet` 抽屉，`v-if="moreOpen"`，遮罩 `@click.self="moreOpen = false"` 关闭，面板底部有 `.admin-more-back` → `/` 返回前台，因为手机端顶栏导航文字入口被隐藏）。当前处在「更多」里的 tab 时，第 5 格会显示该 tab 的图标与名称并高亮（`moreCurrent`/`moreActive`）。两端共用同一个 `tab` ref 与文件末尾的 `watch(tab, loadTab)`，底部栏点击走 `selectTab(key)`（只做 `tab.value = key; moreOpen.value = false`），**行为与点桌面 `.admin-menu` 完全一致，不涉及路由跳转**。样式规则：`.admin-tabbar` 与 `.admin-more-mask` 基础层是 `display: none`（桌面零变化），仅 `@media (max-width: 767px)` 内显示，同断点下 `.admin-menu { display: none }`；层级为 Tab 栏 `z-index: 40`、「更多」遮罩 `39`（低于 Tab 栏，遮罩不挡 Tab 栏）、`.mobile-submit-bar` `30`、兑换码抽屉 `.redemption-drawer-overlay` `110`；Tab 栏高度 `calc(60px + env(safe-area-inset-bottom))`，与前台 `.mobile-tabbar` 同高，所以 `main` 既有的底部 padding 预留无需改动。`App.vue` 给外壳加了 `:class="{ 'app-shell-admin': isAdminRoute }"`（`isAdminRoute = route.path.startsWith('/admin')`），配合 `styles.css` 767px 内的 `.app-shell-admin .mobile-tabbar { display: none }` 隐藏前台「首页/订单/我的」底部栏，避免两条底部栏叠加。
+`AdminView.vue` 是目前最大的前端文件，集中实现后台所有 tab。修改后台时优先复用现有 `runAction()`、`loadTab()`、`showFeedback()` 模式，避免引入不一致的状态管理方式。**桌面端导航**：admin 路由**不渲染全局 AppHeader**（App.vue `v-if="!isAdminRoute"`），由 AdminView 自己的顶栏承担——`h-14` 与侧边栏宽度成比例，左侧 `SidebarTrigger` + 当前 tab 标题（`text-sm font-medium`），右侧 `ThemeToggle` + 退出按钮，避免双顶栏叠加导致固定定位侧边栏与顶栏交叠。侧边栏：shadcn-vue `SidebarProvider/Sidebar`（`collapsible="icon"`，md+ 显示，宽度经 `ui/sidebar/utils.ts` 的 `SIDEBAR_WIDTH = 15rem`（w-60）），`SidebarMenuButton` 统一 `class="h-10 font-medium"`（覆盖默认 h-8），`:is-active` 高亮（`--sidebar-accent` 底 + 主色文字），图标统一 `[&_svg]:size-4` 与文字 gap-2 严格左对齐。内容区**通栏紧凑布局**：无 max-width，卡片间距 `gap-3.5`、内边距 `py-3.5 sm:py-4`，指标卡 `lg:grid-cols-6` 一行排满。**手机端导航**（< md）：后台自己的底部 Tab 栏（5 列）——前 4 格是常用 tab（`MOBILE_PRIMARY_TAB_KEYS = ['dashboard', 'orders', 'users', 'settings']`，来自 `primaryTabs` computed，图标 + 文案），第 5 格是「更多」按钮，其余 5 个 tab（`moreTabs` computed：站点设置/支付/兑换码/备份/打印机）收进 shadcn `Sheet side="bottom"` 底部抽屉（`v-model:open="moreOpen"`，抽屉底部有「返回前台首页」链接，因为手机端顶栏导航文字入口被隐藏）。当前处在「更多」里的 tab 时，第 5 格会显示该 tab 的图标与名称并高亮（`moreCurrent`/`moreActive`）。两端共用同一个 `tab` ref 与文件末尾的 `watch(tab, loadTab)`，底部栏点击走 `selectTab(key)`（只做 `tab.value = key; moreOpen.value = false`），**行为与点桌面侧边栏完全一致，不涉及路由跳转**。`App.vue` 的 `MobileTabbar` 内部用 `route.path.startsWith('/admin')` 自行判断在后台路由不渲染，前台与后台两条底部栏互斥、不会叠加；后台 `SidebarInset` 的内容底部 padding 由壳层 `<main>` 的 `pb-[calc(84px+env(safe-area-inset-bottom))]` 覆盖。弹窗体系：**订单详情用 `Dialog`（`max-h-[85dvh] overflow-y-auto`，字段紧凑栅格 + 文件列表在弹窗内；PDF 预览默认不加载——打开弹窗只展示文件列表，点文件行的「预览」按钮才加载 iframe（按钮变为「收起预览」，再点即卸载 iframe），`loadOrderDetail()`/`closeOrderDetail()`/缓存清理后的详情刷新都会把 `selectedOrderFile` 置空，保证每次打开弹窗都是未预览状态）**，编辑打印机、手动新增/批量生成兑换码用 shadcn `Dialog`，兑换码详情用 `Sheet side="right"`；**删除订单/删除未支付/批量删除未支付的二次确认统一用 `AlertDialog`**（`pendingConfirm` 状态 + `requestConfirm()`，删除请求逻辑不变；备份/兑换码等旧入口仍用 `window.confirm`）。状态反馈：顶部 `Alert`（success/warning 语义类走 `--success`/`--warning` 变量）+ 复制兑换码等瞬时提示走 `toast`（vue-sonner）。
 
-概览 tab 的 6 个统计卡片下方是「每日数据统计」卡片（`frontend/src/components/DailyStatsCard.vue`，`components/` 目录里目前唯一的组件，由 `AdminView.vue` 概览 tab 直接 `<DailyStatsCard />` 引入；切回概览会重新挂载并重新拉取数据）。它自带时间范围切换（近 7 天/近 30 天，走 `GET /api/admin/daily-stats?days=`）、三个维度 Tab（订单趋势/收入趋势/打印失败分布，纯前端切换、不重新请求）、可点击切换显示/隐藏的图例、hover 提示框与空状态。图表是**手写内联 SVG**，没有引入任何图表库：柱子走左轴用 `--cp-brand`，折线走右轴用 `--cp-swatch-cyan`（因为 PC 暗色 palette 里 `--cp-brand` 与 `--cp-brand-hi` 取值相同、无法区分两条系列），`AXIS_TITLES` 里 `count` 对应「数量」。宽度由 `ResizeObserver` 实测 `.daily-stats-chart` 得到，`viewBox` 与 SVG 用户坐标一一对应 CSS 像素，所以 767px 以下只降低高度（`theme.isMobile ? 216 : 264`）而不缩放字体。样式（`.daily-stats-*` 一整套）追加在 `frontend/src/assets/styles.css` 末尾，含独立的 `@media (max-width: 767px)` 与 `@media (max-width: 420px)` 段。
+「站点设置」tab（2026-10 新增，key=`site`）：shadcn `Tabs` 分四组——「登录锁定」（连续失败 N 次锁定 + 锁定分钟数，保存即作用于登录接口）、「网页标题」（留空恢复默认「PrintHub 云打印」）、「网站图标」（上传 .ico/.png 或外链 URL 或不设置，三态 `site_favicon_mode`）、「备案号」（留空全站不显示备案条）。数据经 `GET/PUT /api/admin/site-settings` 与 `POST /api/admin/site-settings/favicon` 读写（`siteSettingsForm` + `applySiteSettingsData()` 回显），每组一个保存按钮只提交该组字段；保存/上传成功后除回显外还会调用 `stores/site.js` 的 `site.apply()` 把标题/favicon/备案号**立即应用到全站**（不刷新页面）。网站图标上传框是隐藏 file input（`siteFaviconInput`）+「选择图标文件上传」按钮，前端先做扩展名/200KB 预检，后端再按文件头校验。内容底部渲染 `<IcpFooter />`（后台路由的备案条；前台路由的备案条由 App.vue 在 main 内渲染）。
 
-打印机 tab 的卡片上展示能力标签（`支持彩色打印`/`仅黑白打印`、`支持自动双面`/`仅单面打印`）与「编辑打印机」按钮（此前编辑弹窗没有入口，本次已修复可达性）；编辑弹窗内新增「打印机能力」区块，两个复选框分别对应 `is_support_color`、`is_support_auto_duplex`，保存时随 `PATCH /api/admin/printers/{name}` 一起提交。本次新增样式（后台的 `.cap-tag`/`.capability-*`/`.swatch`，首页的 `.color-control`/`.color-methods`）都写在 `frontend/src/assets/styles.css`，桌面与手机端（media query）各有一套。首页「彩色打印」卡片保持极简：只有标题和 `黑白 / 彩色` 分段按钮，选项按钮直接复用通用 `.segmented` 样式，不额外加装饰圆点、状态徽标和说明文字。
+概览 tab 的 6 个统计卡片下方是「每日数据统计」卡片（`frontend/src/components/DailyStatsCard.vue`，由 `AdminView.vue` 概览 tab 直接 `<DailyStatsCard />` 引入；切回概览会重新挂载并重新拉取数据）。它自带时间范围切换（近 7 天/近 30 天，走 `GET /api/admin/daily-stats?days=`，shadcn Tabs）与三个维度 Tab（订单趋势/收入趋势/打印失败分布，纯前端切换、不重新请求）——两组 Tab **统一规格 `h-9` + `text-sm`**（时间组 px-4、维度组 px-3.5 带图标），选中态为 muted 轨道上的卡片色胶囊（全站 Tabs 统一样式）；维度 TabsList 窄屏可横向滑动、可点击切换显示/隐藏的图例（按「Tab+系列」记忆在 `hiddenSeries`）、Unovis crosshair + 官方 `ChartTooltipContent` 提示框、加载 Skeleton/Spinner 与 shadcn `Empty` 空状态。图表用 **shadcn-vue 官方 Chart 组件（`components/ui/chart/`，底层 unovis）**：柱状走左轴 `--chart-1`、折线走右轴 `--chart-2`（`VisStackedBar` + `VisLine` + 双 `VisAxis`，各自 `yDomain` 由保留的 `axisMax()`/`niceMax()` nice-number 逻辑算出），颜色全部是 CSS 变量、亮暗自动跟随；x 轴刻度用 `numTicks` 均匀抽稀并从数据取标签。宽度自适应由 Unovis/ChartContainer 处理，不再需要手写 ResizeObserver。
 
-兑换码 tab 的列表已精简为 5 列（兑换码 / 兑换面额 / 有效期 / 使用状态 / 操作），其中「有效期」列由 `redemptionExpiryText(code)` 渲染——`expiry_mode === 'date'` 显示「截止 YYYY-MM-DD HH:mm:ss」（即该日 23:59:59），否则按 `valid_days > 0` 显示「N 天」或「永久有效」。表格外层是 `.redemption-table-scroll`（`overflow-x: auto`），表格本体 `.redemption-table` 设了 `min-width: 560px`，让操作列 `.redemption-cell-actions` 能用 `position: sticky; right: 0` 吸附在右侧、始终可见（`min-width` 必须大于滚动容器宽度，否则 sticky 没有可移动空间；≤767px 时 `min-width` 归 0 且 sticky 取消）。生成时间、单用户上限、兑换用户等次要信息不在表格里，点行内「详情」按钮打开右侧抽屉 `.redemption-drawer`（由 `selectedRedemptionDetail` 控制显隐，遮罩 `.redemption-drawer-overlay` 点击空白处关闭）：`openRedemptionDetail(code)` 先展示列表项已有的完整信息（完整兑换码、面额、已兑换次数 `used_count / usable_count`、生成时间、有效期类型 `expiry_mode`、有效天数、精确到期、单用户使用上限、使用状态、累计可兑金额 `total_amount`），同时请求 `GET /api/admin/redemptions/{id}/logs` 拉取「已兑换用户」列表（`redemptionDetailLoading` 控制加载态，`redemptionLogs` 复用原记录弹窗的数据）。「有效期」一行在手动新增与批量生成两个弹窗里都是`.form-row.expiry-row`：标签右侧 `.expiry-control` 是**单行 flex 布局**——左侧 `.expiry-mode` 分段按钮（复用通用 `.segmented` 规范、改为 `display: inline-flex` 收缩到内容宽度，按钮「按天数」/「指定到期日期」），右侧紧跟当前模式的输入控件，两模式用 `v-if/v-else` 二选一渲染数字输入框或 `<input type="date">`（**不会同时出现两个输入框**，切换只替换右侧控件、整行不换行），提示 `.expiry-hint` 用 `flex: 1 1 100%` 独占下一行，由 `redemptionExpiryHint` / `batchRedemptionExpiryHint`（computed，内部走 `redemptionExpiryHintOf(form)`）给出文案；详情抽屉「有效天数」值由 `redemptionDetailValidDays(code)` 渲染，日期模式显示「—（按到期日期）」。抽屉样式在 `frontend/src/assets/styles.css` 末尾，含独立的 `@media (max-width: 767px)` 段（抽屉占满宽度、详情网格改单列）；`.expiry-control`/`.expiry-mode`/`.expiry-hint` 也写在 `styles.css`（`.expiry-control` 为 `display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px`，`.expiry-control .input` 把全局 `.input { width: 100% }` 覆盖为 `width: auto; min-width: 0`，数字框 `flex: 0 1 160px`、日期框 `flex: 1 1 150px; max-width: 220px` 自适应收缩，桌面按钮 38px 高 / 提示 12px；767px 下按钮与输入框同为 46px 高、按钮内边距压到 `0 10px` 以保持单行，`flex-wrap` 只作极窄屏兜底），同样按类名作用域化、不新增全局规则。删除按钮仍在行内直接调用 `deleteRedemption(code)`。
+打印机 tab 的卡片上展示能力标签（`支持彩色打印`/`仅黑白打印`、`支持自动双面`/`仅单面打印`，Badge + CSS 变量色点）与「编辑打印机」按钮；编辑用 shadcn `Dialog`，弹窗内「打印机能力」区块用两个 `Switch`（分别绑定 `is_support_color`、`is_support_auto_duplex`），保存时随 `PATCH /api/admin/printers/{name}` 一起提交。首页「彩色打印」卡片保持极简：只有标题和 `黑白 / 彩色` Tabs 分段切换（沿用通用 TabsList 样式，不额外加装饰圆点、状态徽标和说明文字）。
+
+兑换码 tab 的列表在桌面端（md+）是 shadcn `Table` 5 列（兑换码 / 兑换面额 / 有效期 / 使用状态 / 操作），手机端（< md）折叠为纵向卡片列表（两套都由同一份 `redemptions` 数据渲染）。其中「有效期」列由 `redemptionExpiryText(code)` 渲染——`expiry_mode === 'date'` 显示「截止 YYYY-MM-DD HH:mm:ss」（即该日 23:59:59），否则按 `valid_days > 0` 显示「N 天」或「永久有效」。生成时间、单用户上限、兑换用户等次要信息不在表格里，点行内「详情」按钮打开右侧 shadcn `Sheet` 抽屉（由 `selectedRedemptionDetail` 控制显隐）：`openRedemptionDetail(code)` 先展示列表项已有的完整信息（完整兑换码、面额、已兑换次数 `used_count / usable_count`、生成时间、有效期类型 `expiry_mode`、有效天数、精确到期、单用户使用上限、使用状态、累计可兑金额 `total_amount`），同时请求 `GET /api/admin/redemptions/{id}/logs` 拉取「已兑换用户」列表（`redemptionDetailLoading` 控制加载态，`redemptionLogs` 复用原记录弹窗的数据）。「有效期」一行在手动新增与批量生成两个 `Dialog` 弹窗里都是：`Tabs`（「按天数」/「指定到期日期」，`v-model` 绑定 `expiry_mode`）+ 当前模式的输入控件（数字输入框或 `<input type="date">`，`v-if/v-else` 二选一渲染，**不会同时出现两个输入框**），提示行由 `redemptionExpiryHint` / `batchRedemptionExpiryHint`（computed，内部走 `redemptionExpiryHintOf(form)`）给出文案；详情抽屉「有效天数」值由 `redemptionDetailValidDays(code)` 渲染，日期模式显示「—（按到期日期）」。「单用户使用限制」是弹窗内一个带边框分组卡片：左侧 `Switch`（绑定 `per_user_limit_enabled`）+ 右侧「最大使用次数」数字输入框（开关关闭时 disabled），底部一行短提示由 `perUserMaxTimesHint` 给出——开启时显示实际填写值、关闭时显示占位 `N`。绑定仍是 `redemptionForm.per_user_limit_enabled` / `per_user_max_times`，提交时关闭则发 0，业务逻辑未变。删除按钮仍在行内直接调用 `deleteRedemption(code)`。
 
 ## 9. 本地运行和测试
 
@@ -456,35 +483,37 @@ docker compose logs -f cloud-print
 - 不要把 `AGENTS.md` 当 PRD 维护；PRD 放在 `doc/PRD.md`。本文件应反映代码真实行为。
 - 不要随意删除或重命名上传目录中的文件。后台缓存清理和订单删除有专门逻辑，并做了上传根目录校验。
 - 修改数据库 schema 时，在 `SCHEMA` 和 `SCHEMA_MIGRATIONS` 中同时考虑新库和旧库；新增设置键要同步 `DEFAULT_SETTINGS`、后台表单、读写逻辑和测试。
-- 修改认证时要同时考虑验证码、session cookie、bearer token、登录失败锁定和前端 `auth` store。
+- 修改认证时要同时考虑验证码、session cookie、bearer token、登录失败锁定和前端 `auth` store。**Bearer token 依赖 `users.token_version` 做服务端吊销**（登录签发 `ver`、`current_user()` 比对、logout/改密/封禁时 +1，见第 5 节）；新增「使某用户 token 失效」的场景时记得 bump 版本号，而不是只删 session。登录失败提示的剩余次数/锁定分钟数是**结构化 detail**（前端只展示后端给的信息），改 `record_login_failure()`/`login_failure()` 的返回结构时要同步 `AuthView.vue` 的样式分级逻辑（`remaining_attempts === 1` 或 `locked` 时红色警示）与 `backend/tests/smoke_test.py` 的断言。
+- 修改站点设置（标题/favicon/备案号/登录锁定策略）时：键值都存 `settings` 表（`services/site_settings.py` 是唯一读写入口，`login_lock_*` 缺键回退 config.json）；`login_lock_threshold`/`login_lock_minutes` 必须同时在 `database.py` 的 `init_db()` 播种（INSERT OR IGNORE，从 config.json 取值）——新部署才有初始值，但绝不能覆盖后台已保存的值；favicon 以 data URI 入库（勿改成落盘 uploads/，会被缓存清理；也不落 config 目录散文件，备份服务不打包任意子目录），`PUT` 不允许直接写 `upload` 模式；前端全局应用统一走 `stores/site.js` 的 `site.apply()`（AdminView 保存后与 App.vue 启动时都调它），备案条组件是 `components/layout/IcpFooter.vue`（前台 App.vue + 后台 AdminView 各渲染一处）。
+- 安全修复（2026-10 渗透测试回归）引入的不变量，改相关代码时不要破坏：① 订单详情对匿名/非属主只返回 `ANONYMOUS_ORDER_FIELDS` 摘要（`routers/orders.py`）；② 文件归属校验集中在 `ensure_file_readable()`（files.py）与 `ensure_files_accessible()`（orders.py，public.py 复用），guest 文件（user_id NULL）保持公开以支撑访客流程；③ `/api/setup/restore/status` 已初始化时必须 401；④ 姓名/联系人字段走 `NAME_PATTERN` 白名单（`models/schemas.py`）；⑤ `/docs`/`/redoc`/`/openapi.json` 仅 development 环境开启（`main.py`）。
 - 修改支付时，要同步 `epay.py`、`orders.py`、`user.py`、后台支付配置、支付自测和 `backend/tests/smoke_test.py`。
 - 修改余额充值时，必须保留 `balance_applied_at` 防重复入账。
 - 修改兑换码时，要保持 `AdminRedemptionCreate.code` 可缺省（留空、空串、纯空白或不传都自动生成随机码），用户侧 `RedeemRequest.code` 仍必填；同步 `backend/app/services/redemption.py`、后台兑换码弹窗和个人中心兑换入口。兑换入账的「占用可用次数 + 加余额 + 写 `redemption_logs`」必须在同一事务（`BEGIN IMMEDIATE` + 条件 UPDATE + 失败回滚）内完成；错误要返回带 `{code, message}` 的标准 JSON，不要抛原始异常。**服务函数必须用别名引入**（`from ..services.redemption import redeem as redeem_redemption_code`）：在 `backend/app/routers/user.py` 里若让服务函数与路由函数同名，路由会调用自己并抛 `AttributeError`（前端只显示纯文本 500）。
 - 修改计价时，要同步前台 `/api/price`、`/api/promotions`、后台配置表单、订单保存字段和烟测断言。
-- 修改兑换码的「限制每个用户最大兑换次数」（`per_user_max_times`）时：该列须在 `SCHEMA` 与 `SCHEMA_MIGRATIONS["redemption_codes"]` 同时存在，且默认值 0（0=不限制，保持原「按总可用次数」逻辑）；`create_code()` 的第 6 个位置参数要在 `backend/app/routers/admin.py` 里透传 `payload.per_user_max_times`（漏传会让这个限制静默失效）。`redeem()` 里**两种模式共用同一条条件 UPDATE**（`WHERE id = ? AND used_count < usable_count`）来占用全局次数；「每个用户最大兑换次数」只是在 `BEGIN IMMEDIATE` 写锁内额外多做一道 `count_user_redemptions() >= per_user_max_times` 判定，**不要**给 `per_user_max_times>0` 的码改成无条件累加 `used_count`（那正是旧版「每用户一次就忽略总次数」的错误语义，会让 `usable_count=1` 时第二个用户也被放行）。旧库的 `per_user_once=1` 由 `migrate_redemption_per_user_limit()` 一次性换算成 `per_user_max_times=1`，代码不再读写旧列。后台兑换码列表已精简为 5 列（兑换码 / 兑换面额 / 有效期 / 使用状态 / 操作），`per_user_max_times`、已兑换次数、生成时间、兑换用户等次要信息不在表格里，全部移入右侧「兑换码详情」抽屉中展示，弹窗「手动新增兑换码」的样式全部写在 `frontend/src/assets/styles.css` 并**按类名作用域化、不新增全局规则**（不污染打印机弹窗共用的 `.form-row`/`.modal-content`）：卡片 `.redemption-modal`（底 `--cp-surface-glass` 半透明 + `backdrop-filter: blur(12px)`、边框 `--cp-brand-border`，深色主题下即「深色深蓝半透明卡片」，浅色主题自动降级为半透明白）、标题居中 `.redemption-modal-header`（关闭按钮绝对定位在右侧）、表单 `.redemption-form .form-row`（标签居左 / 输入框居右两列，输入框边框 `--cp-border-input`、聚焦 `--cp-brand`，≤767px 媒体查询里改为一列上下排布）、带边框分组卡片 `.per-user-card`（边框 `--cp-brand-border`、底 `--cp-soft`：左侧开关 `.toggle-switch`「开启单用户次数限制」、右侧 `.per-user-limit-input` 的「最大使用次数」数字输入框，开关关闭时 `disabled` 置灰，分组底部只有一行短提示「开启后，同一用户最多可使用该兑换码 N 次。」，N 由纯展示计算属性 `perUserMaxTimesHint` 给出——开启时显示实际填写值、关闭时显示占位 `N`）。绑定仍是 `redemptionForm.per_user_limit_enabled` / `per_user_max_times`，提交时关闭则发 0，业务逻辑未变。表格列数/列宽改动要同步 `frontend/src/assets/styles.css` 的 `.redemption-table-head, .redemption-row` 的 `grid-template-columns`（现为 5 列），并注意 `.redemption-table` 的 `min-width` 是操作列 `position: sticky` 能生效的前提（表格必须宽于滚动容器才有可移动空间），≤767px 时要把它降回 0 并取消 `.redemption-cell-actions` 的 sticky。专项回归测试：`python tests/redemption_per_user_test.py`（Windows 本地可跑，不需 pycups/CUPS）。
-- 修改兑换码有效期方式（`expiry_mode` = `days`/`date` 二选一）时：**刻意不加数据库列**，语义完全由 `(valid_days, expires_at)` 组合表达——`expires_at` 非空且 `valid_days=0` 视为 `date`，否则 `days`，读取一律走 `expiry_mode_of(code_row)`，不要新增 `expiry_mode` 列，也不要改动 `code_status()` 的判断顺序（**过期判断必须始终优先于次数判断**）。日期归一化集中在 `backend/app/services/redemption.py` 的 `normalize_expire_date()`（接受 `YYYY-MM-DD`、`date`/`datetime`、带时间 ISO 串，一律落到**当天 23:59:59** 的 `isoformat(timespec="seconds")`；非法值返回 `None`）；服务层遇非法日期回退「按天数」，写接口由 `AdminRedemptionCreate.normalize_redemption_payload` 与 `AdminRedemptionBatchCreate.normalize_expiry` 拦住（报 `请选择有效的到期日期（格式 YYYY-MM-DD）`），并把非 `date` 模式的 `expire_date` 清空、`date` 模式的 `valid_days` 强制归零，避免两种方式同时生效。`create_code()` 新增第 7 个（关键字）参数 `expires_at`、`batch_generate_codes()` 新增第 6 个，`backend/app/routers/admin.py` 必须透传 `expires_at=payload.expire_date`（**漏传会让「指定到期日期」静默退化成永久有效**）。前端手动新增与批量生成两个弹窗的有效期行都是 `.form-row.expiry-row` + `.expiry-control` 内的 `.expiry-mode` 分段按钮二选一渲染（`v-if/v-else`，不会同时出现两个输入框），新增样式追加在 `frontend/src/assets/styles.css` 并**按类名作用域化、不新增全局规则**。专项用例：`python tests/redemption_per_user_test.py` 里的 `test_expire_date_mode()` / `test_expire_date_schema()`。
+- 修改兑换码的「限制每个用户最大兑换次数」（`per_user_max_times`）时：该列须在 `SCHEMA` 与 `SCHEMA_MIGRATIONS["redemption_codes"]` 同时存在，且默认值 0（0=不限制，保持原「按总可用次数」逻辑）；`create_code()` 的第 6 个位置参数要在 `backend/app/routers/admin.py` 里透传 `payload.per_user_max_times`（漏传会让这个限制静默失效）。`redeem()` 里**两种模式共用同一条条件 UPDATE**（`WHERE id = ? AND used_count < usable_count`）来占用全局次数；「每个用户最大兑换次数」只是在 `BEGIN IMMEDIATE` 写锁内额外多做一道 `count_user_redemptions() >= per_user_max_times` 判定，**不要**给 `per_user_max_times>0` 的码改成无条件累加 `used_count`（那正是旧版「每用户一次就忽略总次数」的错误语义，会让 `usable_count=1` 时第二个用户也被放行）。旧库的 `per_user_once=1` 由 `migrate_redemption_per_user_limit()` 一次性换算成 `per_user_max_times=1`，代码不再读写旧列。后台兑换码列表已精简为 5 列（兑换码 / 兑换面额 / 有效期 / 使用状态 / 操作），`per_user_max_times`、已兑换次数、生成时间、兑换用户等次要信息不在表格里，全部移入右侧「兑换码详情」Sheet 抽屉中展示，弹窗「手动新增兑换码」是 shadcn `Dialog` + `Switch`/`Input`/`Tabs` 组合（无自定义 CSS，外观来自 `components/ui/*` 官方组件 + Tailwind 工具类）：分组卡片「单用户使用限制」内是 `Switch`（绑定 `redemptionForm.per_user_limit_enabled`）与「最大使用次数」数字输入框（开关关闭时 disabled），底部短提示的 N 由纯展示计算属性 `perUserMaxTimesHint` 给出——开启时显示实际填写值、关闭时显示占位 `N`。绑定仍是 `redemptionForm.per_user_limit_enabled` / `per_user_max_times`，提交时关闭则发 0，业务逻辑未变。桌面表格用 shadcn `Table`（`max-md:hidden`），手机端折叠为卡片列表（`md:hidden`），列数/列宽改动直接改模板里的 Tailwind 类。专项回归测试：`python tests/redemption_per_user_test.py`（Windows 本地可跑，不需 pycups/CUPS）。
+- 修改兑换码有效期方式（`expiry_mode` = `days`/`date` 二选一）时：**刻意不加数据库列**，语义完全由 `(valid_days, expires_at)` 组合表达——`expires_at` 非空且 `valid_days=0` 视为 `date`，否则 `days`，读取一律走 `expiry_mode_of(code_row)`，不要新增 `expiry_mode` 列，也不要改动 `code_status()` 的判断顺序（**过期判断必须始终优先于次数判断**）。日期归一化集中在 `backend/app/services/redemption.py` 的 `normalize_expire_date()`（接受 `YYYY-MM-DD`、`date`/`datetime`、带时间 ISO 串，一律落到**当天 23:59:59** 的 `isoformat(timespec="seconds")`；非法值返回 `None`）；服务层遇非法日期回退「按天数」，写接口由 `AdminRedemptionCreate.normalize_redemption_payload` 与 `AdminRedemptionBatchCreate.normalize_expiry` 拦住（报 `请选择有效的到期日期（格式 YYYY-MM-DD）`），并把非 `date` 模式的 `expire_date` 清空、`date` 模式的 `valid_days` 强制归零，避免两种方式同时生效。`create_code()` 新增第 7 个（关键字）参数 `expires_at`、`batch_generate_codes()` 新增第 6 个，`backend/app/routers/admin.py` 必须透传 `expires_at=payload.expire_date`（**漏传会让「指定到期日期」静默退化成永久有效**）。前端手动新增与批量生成两个弹窗的有效期行都是 shadcn `Tabs`（「按天数」/「指定到期日期」，`v-model` 绑定 `expiry_mode`）+ 当前模式输入控件（`v-if/v-else` 二选一渲染，不会同时出现两个输入框），外观全部来自官方组件与 Tailwind 工具类。专项用例：`python tests/redemption_per_user_test.py` 里的 `test_expire_date_mode()` / `test_expire_date_schema()`。
 - 修改打印时，注意打印方式完全按运行平台分流（Windows 走系统队列/SumatraPDF，Linux/macOS 走 CUPS 命令），已没有 `print_mode` 配置项，mock 模拟模式也已移除。自动支付回调可能触发真实打印。
-- 修改彩色打印 / 自动双面能力时，要同步 `database.py` 的 `SCHEMA` 与 `SCHEMA_MIGRATIONS`（`printers.is_support_color`/`is_support_auto_duplex`、`orders.use_color`）、`cups_printer.py` 的 `_save_metadata()` 与打印机输出对象、公开接口 `/api/print-options`、`orders.py` 的能力兜底校验、`print_pdf(use_color=...)` 与 `rasterize_pdf_for_print(darken=...)`，以及首页条件渲染和后台编辑弹窗。
+- 修改彩色打印 / 自动双面能力时，要同步 `database.py` 的 `SCHEMA` 与 `SCHEMA_MIGRATIONS`（`printers.is_support_color`/`is_support_auto_duplex`、`orders.use_color`、`orders.merge_duplex`）、`cups_printer.py` 的 `_save_metadata()` 与打印机输出对象、公开接口 `/api/print-options`、`orders.py` 的能力兜底校验、`print_pdf(use_color=...)` 与 `rasterize_pdf_for_print(darken=...)`、合并双面的 `pdf_postprocess.merge_pdfs()`，以及首页条件渲染和后台编辑弹窗。
 - 修改上传或转换时，要保留文件头校验、大小限制、页数限制、覆盖率检测和失败文件入库。
-- 修改后台概览的「每日数据统计」时：分日口径集中在 `backend/app/services/stats.py`。库里时间戳**统一是 UTC 文本**（`orders.created_at` 由 SQLite `CURRENT_TIMESTAMP` 生成 `YYYY-MM-DD HH:MM:SS`，而 `paid_at`/`printed_at` 由 `datetime.utcnow().isoformat()` 生成 `YYYY-MM-DDTHH:MM:SS.ffffff`，**同一张表两种格式并存**），所以 SQL 里先用 `datetime(created_at)` 归一化、按 `strftime('%Y-%m-%d %H', ...)` 聚成 UTC 小时桶，再由 Python 用无参 `astimezone()` 折算本地日期——**不要**直接对字符串做 `substr(created_at, 1, 10)` 分日（那是 UTC 日期，东八区下会把本地 0-8 点的订单算到前一天）。窗口边界用「本地日 00:00 → UTC 半开区间」反算，不要在 SQL 里写死时区偏移。接口是 `GET /api/admin/daily-stats`（`days` 1-90、默认 7），路由函数名与 `stats.py` 的 `daily_stats` 同名，所以**必须用别名引入**（`from ..services.stats import daily_stats as build_daily_stats`），否则路由会调用自己。前端图表在 `frontend/src/components/DailyStatsCard.vue`，调整样式要同步 `frontend/src/assets/styles.css` 的 `.daily-stats-*` 段；颜色一律走 `var(--cp-*)`，不要为了「图表好看」写死 hex。专项回归测试：`python tests/daily_stats_test.py`（Windows 本地可跑，不需 pycups/CUPS）。
+- 修改后台概览的「每日数据统计」时：分日口径集中在 `backend/app/services/stats.py`。库里时间戳**统一是 UTC 文本**（`orders.created_at` 由 SQLite `CURRENT_TIMESTAMP` 生成 `YYYY-MM-DD HH:MM:SS`，而 `paid_at`/`printed_at` 由 `datetime.utcnow().isoformat()` 生成 `YYYY-MM-DDTHH:MM:SS.ffffff`，**同一张表两种格式并存**），所以 SQL 里先用 `datetime(created_at)` 归一化、按 `strftime('%Y-%m-%d %H', ...)` 聚成 UTC 小时桶，再由 Python 用无参 `astimezone()` 折算本地日期——**不要**直接对字符串做 `substr(created_at, 1, 10)` 分日（那是 UTC 日期，东八区下会把本地 0-8 点的订单算到前一天）。窗口边界用「本地日 00:00 → UTC 半开区间」反算，不要在 SQL 里写死时区偏移。接口是 `GET /api/admin/daily-stats`（`days` 1-90、默认 7），路由函数名与 `stats.py` 的 `daily_stats` 同名，所以**必须用别名引入**（`from ..services.stats import daily_stats as build_daily_stats`），否则路由会调用自己。前端图表在 `frontend/src/components/DailyStatsCard.vue`，基于 shadcn-vue Chart（unovis）；颜色一律走 `var(--chart-1)`/`var(--chart-2)` 等 CSS 变量，不要为了「图表好看」写死 hex。专项回归测试：`python tests/daily_stats_test.py`（Windows 本地可跑，不需 pycups/CUPS）。
 - 修改前端 API 路径时，注意生产环境前端由后端直接托管，不需要 Nginx 反代。
-- 修改主题（亮/暗）时：颜色必须走 `frontend/src/assets/theme.css` 的 `var(--cp-*)`，不要在 `styles.css` 里写死 hex/rgba；新增变量要在**四个 palette 块**（PC 亮、PC 暗、`@media (max-width: 767px)` 下的移动亮、移动暗）里同时补齐，缺一个就会在对应场景下取到空值。手机端判定宽度必须与 `stores/theme.js` 的 `MOBILE_QUERY = '(max-width: 767px)'` 一致。PC 与移动端是两套独立配色，不要用一套变量同时控制两端。
+- 修改主题（亮/暗）时：颜色必须走 `frontend/src/assets/index.css` 定义的 CSS 变量（shadcn token：`--background`/`--card`/`--primary`/`--muted-foreground`/...，以及扩展的 `--success`/`--warning`/`--chart-1..5`/`--brand-*`），页面里用 Tailwind 工具类（`bg-card`、`text-primary` 等）引用，**禁止写死 hex/rgba**；亮色改 `:root` 块、暗色改 `.dark` 块，两块变量集合必须保持一致（PC 与移动端共用同一套亮/暗变量，不再区分设备配色）。主题切换是 `<html class="dark">`（`stores/theme.js` 的 `applyTheme()` 与 `index.html` 内联脚本共用同一规则；localStorage 键仍为 `cloud-print-theme`）。移动端断点统一用 Tailwind 的 `md`（768px）。字体改动只动 `assets/index.css` 顶部的 `@font-face` 与 `@theme` 里的 `--font-sans`/`--font-display` 栈（`assets/fonts/space-grotesk-latin.woff2` 由 Vite 打包，不要删除；它只覆盖拉丁字符与数字，中文自动回退系统字体）。规范见 `doc/UI_ADAPTATION.md` 第 5.5 节。
 - `frontend/dist/`、`frontend/node_modules/`、`release/` 和同步冲突副本正常编码不要手动编辑；Docker 构建会在镜像内重新生成前端产物。
 - 仓库可能出现 NAS 同步冲突副本。除非明确处理同步冲突，否则不要修改这些副本文件。
 
 ## 11. 当前实现与原 PRD 的差异
 
-- 独立文档预览页目前未实现；预览嵌在首页和后台订单详情。
+- 独立文档预览页目前未实现；预览以弹窗形式嵌在首页（shadcn `Dialog`）和后台订单详情弹窗内。
 - 登录和注册不是两个路由，而是在 `/login` 的同一个视图中切换，并都要求验证码。
 - 用户自助充值已经实现，但不是独立充值页面，而是个人中心里的充值模块。
 - 后台配置、订单、用户、支付、打印机都集中在 `/admin` 单页 tab 中。
 - 当前 Office 转 PDF 依赖系统 LibreOffice，不使用 `python-docx` 或 `python-pptx` 做转换。
 - 当前 token 是项目自定义 HMAC token，不是 JWT 库；同时存在 session cookie 作为后备鉴权。
 - 当前支付返回的是后端自动提交表单 URL，不是直接二维码图片 URL。
-- 后台概览的「每日数据统计」图表是**手写内联 SVG**（`frontend/src/components/DailyStatsCard.vue`），项目没有引入 ECharts/Recharts 或任何其它图表库，`package.json`/`pnpm-lock.yaml` 也未新增依赖；原因是前端栈是 Vue 3（Recharts 只支持 React），且 Docker 构建走 `pnpm install --frozen-lockfile`，新增依赖必须同时更新锁文件。
+- 后台概览的「每日数据统计」图表已迁移到 **shadcn-vue 官方 Chart 组件**（`frontend/src/components/ui/chart/`，底层 unovis，`@unovis/vue` + `@unovis/ts`；图表颜色跟随 `--chart-1..5` CSS 变量）。此前是手写内联 SVG、零图表依赖；引入依赖的同时已更新 `pnpm-lock.yaml`，Docker 构建仍走 `pnpm install --frozen-lockfile`。
 - 当前打印完成状态依赖 CUPS 队列确认；Windows 下无法可靠自动确认完成（mock 模拟模式已移除）。
 - 当前部署方式是 Docker Compose 单容器：FastAPI 直接托管前端静态文件，没有独立 Nginx 前端容器；SQLite、上传缓存、备份、日志和 `config.json` 都在 `./config` 绑定挂载目录里。
-- 彩色打印与自动双面只在 Linux/macOS 的 CUPS 链路真正生效（`lp -o print-color-mode=color|monochrome`）；Windows 的 SumatraPDF/`PrintTo` 分支只处理打印机与份数，`double_sided` 与 `use_color` 都不生效（与改动前一致）。自动双面也不是「整单双面」，而是按份文档设置。
+- 彩色打印与合并双面打印只在 Linux/macOS 的 CUPS 链路真正生效（`lp -o print-color-mode=color|monochrome`、`lp -o sides=two-sided-long-edge`）；Windows 的 SumatraPDF/`PrintTo` 分支只处理打印机与份数，`double_sided`、`merge_duplex` 与 `use_color` 都不生效（与改动前一致）。合并双面是把全部文档合并成一个双面打印流（跨文档正反面连打），不是整单多份独立双面。
 
 ## 12. 快速理解代码链路
 
@@ -595,23 +624,25 @@ AdminView.vue 打印机 tab
 
 按常见改动类型定位代码：
 
-- 登录、验证码、会话、权限：`backend/app/routers/auth.py`、`backend/app/services/auth_session.py`、`backend/app/routers/deps.py`、`backend/app/utils/security.py`、`frontend/src/stores/auth.js`、`frontend/src/views/AuthView.vue`。
+- 登录、验证码、会话、权限：`backend/app/routers/auth.py`、`backend/app/services/auth_session.py`、`backend/app/routers/deps.py`、`backend/app/utils/security.py`、`frontend/src/stores/auth.js`、`frontend/src/views/AuthView.vue`（登录失败剩余次数/锁定提示的样式分级也在这里）。
+- 站点设置（标题/favicon/备案号/登录锁定策略）：`backend/app/services/site_settings.py`（唯一读写入口）、`backend/app/routers/admin.py`（`/site-settings` GET/PUT/favicon 上传）、`backend/app/routers/public.py`（`/api/site-settings` 与 `/api/site/favicon`）、`backend/app/models/schemas.py`（`SiteSettingsUpdate`）、`backend/app/database.py`（`login_lock_*` 播种）、`frontend/src/stores/site.js`（全局应用）、`frontend/src/components/layout/IcpFooter.vue`（备案条）、`frontend/src/views/AdminView.vue`（「站点设置」tab）。
 - 上传、转换、预览、安全检测：`backend/app/routers/files.py`、`backend/app/services/files.py`、`backend/app/services/safety.py`、`frontend/src/views/HomeView.vue`。
 - 计价、覆盖率阶梯、促销：`backend/app/services/pricing.py`、`backend/app/routers/public.py`、`backend/app/routers/admin.py`、`frontend/src/views/HomeView.vue`、`frontend/src/views/AdminView.vue`。
 - 打印订单、支付、易支付回调：`backend/app/routers/orders.py`、`backend/app/services/epay.py`、`backend/app/services/printer.py`、`frontend/src/views/PaymentView.vue`。
 - 用户资料、余额充值、个人中心订单：`backend/app/routers/user.py`、`backend/app/services/epay.py`、`frontend/src/views/DashboardView.vue`。
 - 兑换码（后台生成 + 用户兑换，含「每个用户最大兑换次数」`per_user_max_times`）：`backend/app/services/redemption.py`（`redeem()` 双重校验 + `count_user_redemptions()`/`per_user_max_times_of()`/`has_redeemed()`）、`backend/app/routers/admin.py`（`/redemptions`，`create_code()` 必须透传第 6 个位置参数）、`backend/app/routers/user.py`（`POST /api/user/redeem`）、`backend/app/models/schemas.py`（`AdminRedemptionCreate`/`RedeemRequest`）、`backend/app/database.py`（`SCHEMA` + `SCHEMA_MIGRATIONS["redemption_codes"]["per_user_max_times"]` + `migrate_redemption_per_user_limit()`）、`frontend/src/views/AdminView.vue`、`frontend/src/views/DashboardView.vue`、`backend/tests/redemption_per_user_test.py`。
 - 打印机管理和真实打印：`backend/app/services/printer.py`、`backend/app/services/print_monitor.py`、`backend/app/routers/admin.py`、`scripts/test_printer.py`。
-- 彩色打印、自动双面能力（前台条件渲染 + 后端兜底校验）：`backend/app/routers/public.py`（`GET /api/print-options`）、`backend/app/services/cups_printer.py`（`_save_metadata()` 保存两项能力）、`backend/app/routers/orders.py`（能力兜底 400）、`backend/app/services/printer.py`（`use_color` → `lp -o print-color-mode=`）、`backend/app/services/pdf_postprocess.py`（`rasterize_pdf_for_print(darken=...)`）、`frontend/src/views/HomeView.vue`、`frontend/src/views/AdminView.vue`。
+- 彩色打印、合并双面打印能力（前台条件渲染 + 后端兜底校验 + 合并派发）：`backend/app/routers/public.py`（`GET /api/print-options`）、`backend/app/services/cups_printer.py`（`_save_metadata()` 保存两项能力）、`backend/app/routers/orders.py`（能力兜底 400、`dispatch_order_print()` 的合并分支）、`backend/app/services/pricing.py`（`calculate_files_price_detail(merge_duplex=...)`）、`backend/app/services/pdf_postprocess.py`（`merge_pdfs()` 合并、`rasterize_pdf_for_print(darken=...)`）、`backend/app/services/printer.py`（`use_color` → `lp -o print-color-mode=`）、`frontend/src/views/HomeView.vue`、`frontend/src/views/AdminView.vue`。
 - 数据表、默认设置、旧库迁移：`backend/app/database.py`，同时检查后台设置表单和 `backend/tests/smoke_test.py`。
-- 后台概览「每日数据统计」（按本地时区分日聚合 + 手写 SVG 图表）：`backend/app/services/stats.py`、`backend/app/routers/admin.py`（`GET /api/admin/daily-stats`，别名引入 `daily_stats` 为 `build_daily_stats`）、`frontend/src/components/DailyStatsCard.vue`、`frontend/src/views/AdminView.vue`（概览 tab）、`frontend/src/assets/styles.css`（`.daily-stats-*`）、`backend/tests/daily_stats_test.py`。
-- 亮/暗主题（PC 与移动端两套独立配色）：`frontend/src/assets/theme.css`（四套 palette）、`frontend/src/stores/theme.js`（状态/记忆/跟随系统/视口判定）、`frontend/src/assets/styles.css`（`var(--cp-*)` 与深色专项段）、`frontend/src/App.vue`（`.theme-toggle`）、`frontend/index.html`（防闪烁内联脚本）。规范见 `doc/UI_ADAPTATION.md` 第 5.5 节。
+- 后台概览「每日数据统计」（按本地时区分日聚合 + shadcn Chart/unovis 双轴柱线图）：`backend/app/services/stats.py`、`backend/app/routers/admin.py`（`GET /api/admin/daily-stats`，别名引入 `daily_stats` 为 `build_daily_stats`）、`frontend/src/components/DailyStatsCard.vue`、`frontend/src/components/ui/chart/`（shadcn 官方图表组件）、`frontend/src/views/AdminView.vue`（概览 tab）、`backend/tests/daily_stats_test.py`。
+- 亮/暗主题（`.dark` 类切换 + CSS 变量）：`frontend/src/assets/index.css`（`:root`/`.dark` 变量块、`@font-face`、`@theme` 映射）、`frontend/src/stores/theme.js`（状态/记忆/跟随系统/切类）、`frontend/src/components/layout/ThemeToggle.vue`（切换按钮）、`frontend/index.html`（favicon、meta/og/theme-color、防闪烁内联脚本）。规范见 `doc/UI_ADAPTATION.md` 第 5.5 节。
+- 前端组件体系（Tailwind v4 + shadcn-vue）：`frontend/components.json`（CLI 配置）、`frontend/src/components/ui/*`（官方生成组件，勿手改外观逻辑）、`frontend/src/lib/utils.js`（`cn()`）、`frontend/src/components/layout/*`（AppHeader/MobileTabbar/ThemeToggle）、`frontend/src/composables/useNavTargets.js`（导航目标/高亮）、`frontend/vite.config.js`（`@tailwindcss/vite` + `@` 别名）、`frontend/jsconfig.json`。新增组件：`pnpm dlx shadcn-vue@latest add <component>`。
 
 文档或代码变更后的最低验证建议：
 
 - 只改文档：回读对应章节并检查路径、接口和环境变量名称是否仍与代码一致。
 - 改后端业务：优先运行 `backend/tests/smoke_test.py`，并使用临时数据库和临时上传目录。
-- 改前端交互：运行 `npm --prefix frontend run build`，涉及页面布局时再启动前端做浏览器检查。
+- 改前端交互：在有 Node 的环境运行 `pnpm --prefix frontend run build`（本机无 Node 时用 `node:22` 容器挂载构建，见 `doc/UI_ADAPTATION.md` 第 7 节），涉及页面布局时再做浏览器检查。
 - 改真实打印：先在受控环境（测试用 CUPS 队列或备用打印机）跑通下单和后台测试页，确认无误后再接入生产打印机（`cups` 或 `system`）。
 
 ## 14. 版本控制与仓库发布

@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS users (
     balance REAL DEFAULT 0,
     is_admin INTEGER DEFAULT 0,
     is_active INTEGER DEFAULT 1,
+    -- 【安全修复 V-05】令牌版本号：logout / 改密 / 封禁时 +1，签发的 bearer token
+    -- 携带签发时的版本号，校验时不一致即 401，实现自签 token 的服务端吊销。
+    token_version INTEGER DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -36,6 +39,10 @@ CREATE TABLE IF NOT EXISTS files (
     is_safe INTEGER DEFAULT 1,
     status TEXT DEFAULT 'uploaded',
     error_message TEXT,
+    -- 【性能修复】条件光栅化标记：1=打印前需整页光栅化（Office 转换件/含 SMask 遮罩的
+    -- PDF，防远端 RIP 丢公式插图），0=纯净 PDF/图片转换件，直接提交原文件（更快更清晰）。
+    -- 旧库补列默认 1，保持既有「一律光栅化」行为不变。
+    needs_rasterize INTEGER DEFAULT 1,
     uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
@@ -49,6 +56,8 @@ CREATE TABLE IF NOT EXISTS orders (
     is_double_sided INTEGER DEFAULT 0,
     -- 【新增功能】彩色打印：用户下单时是否选择彩色（NULL=旧数据/旧前端未指定，1=彩色，0=黑白）
     use_color INTEGER,
+    -- 【新增功能】合并双面打印：1=全部文档按顺序合并为一个双面打印流（跨文档正反面连打），0/NULL=按份打印
+    merge_duplex INTEGER DEFAULT 0,
     copies INTEGER DEFAULT 1,
     payment_method TEXT DEFAULT 'wxpay',
     printer_name TEXT,
@@ -229,11 +238,15 @@ SCHEMA_MIGRATIONS = {
     "users": {
         "real_name": "TEXT",
         "is_active": "INTEGER DEFAULT 1",
+        "token_version": "INTEGER DEFAULT 0",
     },
     "files": {
         "page_coverages": "TEXT",
         "status": "TEXT DEFAULT 'uploaded'",
         "error_message": "TEXT",
+        # 【性能修复】旧库补列：条件光栅化标记。默认 1 = 旧文件保持「打印前一律
+        # 光栅化」行为不变；新上传文件按「是否 Office 转换件 / 是否含 SMask 遮罩」判定。
+        "needs_rasterize": "INTEGER DEFAULT 1",
     },
     "orders": {
         "order_type": "TEXT DEFAULT 'print'",
@@ -252,6 +265,9 @@ SCHEMA_MIGRATIONS = {
         # 【新增功能】旧库补列：彩色打印标记。故意不给 DEFAULT：老订单补列后为 NULL
         # （NULL = 未指定，打印时完全沿用原有逻辑，历史订单/旧前端行为不变）。
         "use_color": "INTEGER",
+        # 【新增功能】旧库补列：合并双面打印标记。0/NULL = 按份打印（历史订单行为不变），
+        # 1 = 全部文档合并为一个双面打印流（跨文档正反面连打）。
+        "merge_duplex": "INTEGER DEFAULT 0",
     },
     "payments": {
         "status": "TEXT DEFAULT 'pending'",
@@ -319,6 +335,9 @@ def connect() -> sqlite3.Connection:
     connection = sqlite3.connect(settings.database_path, check_same_thread=False)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
+    # 【性能修复】打印派发改后台线程后，存在「请求线程写 + 派发线程写」的并发窗口；
+    # busy_timeout 让短暂争锁的写入自动等待而非直接抛 database is locked。
+    connection.execute("PRAGMA busy_timeout = 5000")
     return connection
 
 
@@ -339,6 +358,11 @@ def init_db() -> None:
             "public_base_url": settings.public_base_url,
             "frontend_base_url": settings.frontend_base_url,
             "default_printer": settings.default_printer,
+            # 登录锁定策略原是 config.json 部署级键，现开放到后台「站点设置」：
+            # 建库时按 config.json 当前值播种（分钟粒度），之后一律以后台保存的数据库值为准，
+            # 缺键/非法值时仍回退 config.json（见 services/site_settings.py）。
+            "login_lock_threshold": str(max(1, settings.login_lock_threshold)),
+            "login_lock_minutes": str(max(1, settings.login_lock_seconds // 60)),
             "cups_server": settings.cups_server,
             "cups_user": settings.cups_user,
             "cups_password": settings.cups_password,

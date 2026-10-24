@@ -43,6 +43,56 @@ def _iter_image_xobjects(page):
             yield xobjects, name
 
 
+def _resources_have_mask(resources, depth: int = 0) -> bool:
+    """递归检测页面资源里的图像是否带 /SMask 或 /Mask 遮罩（含嵌套 Form XObject，深度限 4）。"""
+    if resources is None or depth > 4:
+        return False
+    try:
+        resources = resources.get_object()
+    except Exception:
+        return False
+    xobjects = resources.get("/XObject")
+    if not xobjects:
+        return False
+    try:
+        xobjects = xobjects.get_object()
+    except Exception:
+        return False
+    for name in list(xobjects.keys()):
+        try:
+            xobj = xobjects[name].get_object()
+        except Exception:
+            continue
+        subtype = xobj.get("/Subtype")
+        if subtype == "/Image" and ("/SMask" in xobj or "/Mask" in xobj):
+            return True
+        if subtype == "/Form" and _resources_have_mask(xobj.get("/Resources"), depth + 1):
+            return True
+    return False
+
+
+def pdf_has_image_masks(pdf_path) -> bool:
+    """检测 PDF 是否包含带软/硬遮罩（/SMask、/Mask）的图像。
+
+    这类文件在远端 CUPS/RIP 光栅化时易被整块丢弃（「预览正常、打印后公式/插图
+    消失」的根源），上传时据此打 needs_rasterize 标记，打印前才做整页光栅化。
+    纯净 PDF 返回 False，打印时直接提交原始矢量文件，省掉光栅化耗时。
+    任何解析异常返回 False（尽力而为，不阻断上传）。
+    """
+    try:
+        from PyPDF2 import PdfReader
+    except Exception:
+        return False
+    try:
+        reader = PdfReader(str(pdf_path))
+        for page in reader.pages:
+            if _resources_have_mask(page.get("/Resources")):
+                return True
+    except Exception:
+        return False
+    return False
+
+
 def _compose_to_white(image) -> "object":
     """把可能带 alpha 的 PIL 图像合成到纯白背景并返回 RGB（无透明）。"""
     from PIL import Image
@@ -55,11 +105,81 @@ def _compose_to_white(image) -> "object":
     return image.convert("RGB")
 
 
-def _decode_image_stream(img_obj):
-    """尽力把一个 PDF 图像/遮罩流解码为 PIL.Image；无法解码返回 None。
+def _colorspace_info(colorspace) -> tuple[str, int] | None:
+    """把 PDF 色彩空间对象解析为 (PIL 等效模式, 每像素字节数)；模式可为 "L"/"RGB"/"CMYK"/"INDEXED"。
 
-    覆盖最常见的两类编码：/DCTDecode(JPEG) 与 /FlateDecode(原始像素)。其余罕见滤镜
-    （CCITT、JPX 等）返回 None，交由上层跳过——安全降级，绝不抛错阻断上传。
+    无法识别时返回 None——调用方必须跳过该图，绝不能按猜测的模式解码。
+
+    【乱码修复】旧实现只认 Gray/RGB 两种，CMYK、ICCBased(N=4)、Indexed 会被硬按
+    RGB 解析且长度只查「够不够」不查「对不对」，4 通道数据被错位切成 3 通道，产出
+    颜色错乱的静默坏图（用户看到的就是"化学式/插图整块乱码"）。现在显式识别：
+    DeviceGray/CalGray、DeviceRGB/CalRGB、DeviceCMYK、ICCBased N=1/3/4、Indexed；
+    DeviceN/Separation/Pattern 等混色/专色空间一律返回 None 安全跳过。
+    """
+    if colorspace is None:
+        return ("RGB", 3)
+    resolved = colorspace.get_object() if hasattr(colorspace, "get_object") else colorspace
+    if isinstance(resolved, str):  # NameObject 是 str 子类
+        name = str(resolved)
+        if name in ("/DeviceGray", "/CalGray", "/G"):
+            return ("L", 1)
+        if name in ("/DeviceRGB", "/CalRGB", "/RGB"):
+            return ("RGB", 3)
+        if name in ("/DeviceCMYK", "/CMYK"):
+            return ("CMYK", 4)
+        return None
+    if isinstance(resolved, (list, tuple)):  # ArrayObject 是 list 子类
+        family = str(resolved[0]) if resolved else ""
+        if family == "/ICCBased":
+            try:
+                components = int(resolved[1].get_object().get("/N"))
+            except Exception:
+                return None
+            return {1: ("L", 1), 3: ("RGB", 3), 4: ("CMYK", 4)}.get(components)
+        if family == "/CalRGB":
+            return ("RGB", 3)
+        if family == "/CalGray":
+            return ("L", 1)
+        if family == "/Indexed":
+            return ("INDEXED", 1)
+        return None  # DeviceN / Separation / Pattern 等
+    return None
+
+
+def _decode_indexed_image(cs_array, width: int, height: int, data) -> "object | None":
+    """解码 /Indexed 调色板图像为 RGB；任何异常返回 None（安全跳过）。"""
+    from PIL import Image
+
+    try:
+        base_info = _colorspace_info(cs_array[1])
+        if base_info is None or base_info[0] not in ("L", "RGB"):
+            return None  # CMYK 调色板等罕见组合，展开复杂，跳过
+        base_mode, components = base_info
+        hival = int(cs_array[2])
+        lookup = cs_array[3]
+        lookup = lookup.get_object() if hasattr(lookup, "get_object") else lookup
+        if isinstance(lookup, str):
+            lookup = lookup.encode("latin-1", errors="ignore")
+        if not isinstance(lookup, (bytes, bytearray)):
+            return None
+        needed = (hival + 1) * components
+        palette = bytes(lookup)[:needed]
+        if len(palette) < needed or len(data) < width * height:
+            return None
+        image = Image.frombytes("P", (width, height), bytes(data)[: width * height])
+        # putpalette 要求补齐到 256 个表项，不足的填 0（超出 hival 的索引本不应出现）。
+        image.putpalette(palette.ljust(256 * components, b"\x00"), rawmode=base_mode)
+        return image.convert("RGB")
+    except Exception:
+        return None
+
+
+def _decode_image_stream(img_obj):
+    """尽力把一个 PDF 图像/遮罩流解码为 PIL.Image；无法「确定」解码时返回 None。
+
+    覆盖最常见的两类编码：/DCTDecode(JPEG) 与 /FlateDecode/无滤镜(原始像素)。
+    其余罕见滤镜（CCITT、JPX 等）因长度校验对不上自然返回 None，交由上层跳过
+    ——安全降级，绝不抛错阻断上传，也绝不按猜测的通道数硬解（见 _colorspace_info）。
     """
     from PIL import Image
 
@@ -70,7 +190,6 @@ def _decode_image_stream(img_obj):
         return None
     filt = img_obj.get("/Filter")
     filt = filt[0] if isinstance(filt, list) and filt else filt
-    color = str(img_obj.get("/ColorSpace", "/DeviceRGB"))
     try:
         data = img_obj.get_data()
     except Exception:
@@ -80,15 +199,25 @@ def _decode_image_stream(img_obj):
             return None
     try:
         if str(filt) == "/DCTDecode":
+            # JPEG 自描述（含 Adobe CMYK JPEG），交给 PIL 按其自身头解码后统一转 RGB。
             return Image.open(io.BytesIO(data)).convert("RGB")
-        # 其余按已解码原始像素处理（PyPDF2 get_data 会自动做 Flate 解压）
-        if "Gray" in color or str(img_obj.get("/ColorSpace")) == "/DeviceGray":
-            mode, expect = "L", width * height
-        else:
-            mode, expect = "RGB", width * height * 3
-        if len(data) < expect:
+        if int(img_obj.get("/BitsPerComponent", 8) or 8) != 8:
+            return None  # 1/2/4bpp 展开逻辑复杂，安全跳过（旧实现同样会因长度不符跳过）
+        info = _colorspace_info(img_obj.get("/ColorSpace"))
+        if info is None:
             return None
-        return Image.frombytes(mode, (width, height), data[:expect])
+        if info[0] == "INDEXED":
+            cs = img_obj.get("/ColorSpace")
+            cs = cs.get_object() if hasattr(cs, "get_object") else cs
+            return _decode_indexed_image(cs, width, height, data)
+        mode, components = info
+        expect = width * height * components
+        if len(data) != expect:
+            return None  # 严格相等：长度对不上说明仍有未理解的编码，绝不能硬解
+        image = Image.frombytes(mode, (width, height), bytes(data))
+        if mode == "CMYK":
+            image = image.convert("RGB")
+        return image
     except Exception:
         return None
 
@@ -319,3 +448,34 @@ def rasterize_pdf_for_print(pdf_path, dpi: int = 300, darken: bool = True):
         return None
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def merge_pdfs(pdf_paths: list[Path]) -> Path:
+    """把多份 PDF 按顺序合并成一个临时 PDF（「合并双面打印」打印派发用）。
+
+    仅按页序把各文档的页面拼接起来，供打印派发把多个不同文档连到同一个双面
+    打印流（不同文档的页面连续排到纸张正反面）；不改写入库/预览用的原始文件，
+    调用方负责删除返回的临时文件。任何解析或写入异常都向上抛出，由调用方按
+    打印失败处理，不影响其它订单。
+    """
+    import os
+    import tempfile
+
+    from PyPDF2 import PdfReader, PdfWriter
+
+    writer = PdfWriter()
+    for pdf_path in pdf_paths:
+        reader = PdfReader(str(pdf_path))
+        for page in reader.pages:
+            writer.add_page(page)
+    fd, temp_name = tempfile.mkstemp(prefix="merged_print_", suffix=".pdf")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            writer.write(handle)
+    except Exception:
+        try:
+            os.unlink(temp_name)
+        except OSError:
+            pass
+        raise
+    return Path(temp_name)

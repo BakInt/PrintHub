@@ -1,193 +1,256 @@
 <template>
-  <section class="account-dashboard" :class="mobileTabClass">
-    <div class="account-sidebar">
-      <aside class="panel account-summary-panel">
-        <p class="eyebrow">个人中心</p>
-        <h1>{{ auth.user?.username || '用户' }}</h1>
-        <div class="metric-card balance-card">
-          <span>账户余额</span>
-          <strong>¥{{ formatMoney(auth.user?.balance || 0) }}</strong>
-        </div>
-        <button class="secondary-btn" @click="refreshDashboard" :disabled="loading">
-          <RefreshCw :size="18" />刷新余额
-        </button>
-      </aside>
+  <section class="grid gap-4 lg:items-start lg:gap-6" :class="isOrdersTab ? '' : 'lg:grid-cols-[minmax(280px,330px)_minmax(0,1fr)]'">
+    <!-- 左列：个人中心摘要 + 打印联系人（tab=orders 时整列隐藏，桌面与手机一致） -->
+    <div v-if="!isOrdersTab" class="grid gap-4 lg:sticky lg:top-20">
+      <!-- 账户摘要 -->
+      <Card class="py-5">
+        <CardHeader class="grid gap-1.5 pb-1">
+          <p class="text-[13px] font-bold tracking-widest text-primary">个人中心</p>
+          <CardTitle class="font-display text-2xl tracking-tight">{{ auth.user?.username || '用户' }}</CardTitle>
+        </CardHeader>
+        <CardContent class="grid gap-3">
+          <div class="rounded-xl border border-primary/25 bg-accent/70 p-4">
+            <span class="text-[13px] text-muted-foreground">账户余额</span>
+            <strong class="block font-display text-3xl font-bold tracking-tight text-primary tabular-nums">
+              ¥{{ formatMoney(auth.user?.balance || 0) }}
+            </strong>
+          </div>
+          <Button variant="secondary" class="h-10" @click="refreshDashboard" :disabled="loading">
+            <RefreshCw />
+            刷新余额
+          </Button>
+        </CardContent>
+      </Card>
 
-      <section class="panel profile-panel" :class="{ 'profile-collapsed': profileCollapsed }">
-        <!-- 手机端：已绑定且非编辑态时折叠为摘要卡，点「修改」再展开表单；桌面端始终展开表单 -->
-        <div class="profile-summary" v-if="profileComplete">
-          <div class="section-heading compact profile-heading">
-            <h2>打印联系人</h2>
-            <span class="badge success">已绑定</span>
-          </div>
-          <div class="profile-summary-body">
-            <div class="profile-summary-info">
-              <span class="profile-summary-name">{{ auth.user?.real_name }}</span>
-              <span class="profile-summary-phone">{{ maskPhone(auth.user?.phone) }}</span>
+      <!-- 打印联系人：手机端已绑定且非编辑态时折叠为摘要卡，桌面端始终展开表单 -->
+      <Card class="py-5">
+        <CardHeader class="pb-0">
+          <CardTitle class="flex items-center gap-2 font-display text-lg">
+            打印联系人
+            <Badge :class="profileComplete ? 'border-transparent bg-success/10 text-success' : 'border-transparent bg-warning/15 text-warning'">
+              {{ profileComplete ? '已绑定' : '未绑定' }}
+            </Badge>
+          </CardTitle>
+        </CardHeader>
+        <CardContent class="grid gap-3">
+          <!-- 手机端折叠摘要（桌面端隐藏） -->
+          <div v-if="profileComplete" class="grid gap-2.5 rounded-xl border bg-muted/50 p-3.5 md:hidden">
+            <div class="grid min-w-0 gap-0.5">
+              <span class="truncate font-semibold text-foreground">{{ auth.user?.real_name }}</span>
+              <span class="text-sm text-muted-foreground">{{ maskPhone(auth.user?.phone) }}</span>
             </div>
-            <button class="secondary-btn small" type="button" @click="startEditProfile">
-              <Pencil :size="16" />修改
-            </button>
+            <Button variant="secondary" size="sm" class="h-9 w-fit" type="button" @click="startEditProfile">
+              <Pencil />
+              修改
+            </Button>
           </div>
-        </div>
-        <form class="profile-form" @submit.prevent="saveProfile">
-          <div class="section-heading compact profile-heading">
-            <h2>打印联系人</h2>
-            <span :class="['badge', profileComplete ? 'success' : 'warning']">{{ profileComplete ? '已绑定' : '未绑定' }}</span>
-          </div>
-          <label class="field-label">
-            姓名
-            <input v-model.trim="profileForm.real_name" class="input" maxlength="40" placeholder="请输入姓名" />
-          </label>
-          <label class="field-label">
-            手机号
-            <input v-model="profileForm.phone" class="input" type="tel" inputmode="numeric" maxlength="11" placeholder="请输入 11 位手机号" @input="sanitizeProfilePhone" />
-          </label>
-          <small v-if="profileForm.phone && !profilePhoneValid" class="field-hint warning">请输入 11 位中国大陆手机号</small>
-          <div class="profile-actions">
-            <button v-if="profileComplete" class="secondary-btn" type="button" @click="cancelEditProfile">取消</button>
-            <button class="primary-btn full" type="submit" :disabled="savingProfile">
-              {{ savingProfile ? '保存中...' : '保存联系人' }}
-            </button>
-          </div>
-        </form>
-        <div v-if="feedback" :class="['notice', feedbackType]">{{ feedback }}</div>
-      </section>
+          <form class="grid gap-3" :class="profileCollapsed ? 'max-md:hidden' : ''" @submit.prevent="saveProfile">
+            <div class="grid gap-1.5">
+              <Label for="profile-name" class="text-sm font-bold">姓名</Label>
+              <Input id="profile-name" v-model.trim="profileForm.real_name" maxlength="40" placeholder="请输入姓名" class="h-10" />
+            </div>
+            <div class="grid gap-1.5">
+              <Label for="profile-phone" class="text-sm font-bold">手机号</Label>
+              <Input
+                id="profile-phone"
+                v-model="profileForm.phone"
+                type="tel"
+                inputmode="numeric"
+                maxlength="11"
+                placeholder="请输入 11 位手机号"
+                class="h-10"
+                @input="sanitizeProfilePhone"
+              />
+              <small v-if="profileForm.phone && !profilePhoneValid" class="text-xs text-destructive">
+                请输入 11 位中国大陆手机号
+              </small>
+            </div>
+            <div class="flex gap-2">
+              <Button v-if="profileComplete" variant="secondary" type="button" class="h-10" @click="cancelEditProfile">取消</Button>
+              <Button type="submit" class="h-10 flex-1 font-bold" :disabled="savingProfile">
+                {{ savingProfile ? '保存中...' : '保存联系人' }}
+              </Button>
+            </div>
+          </form>
+          <Alert
+            v-if="feedback"
+            :class="feedbackType === 'warning'
+              ? 'border-warning/30 bg-warning/10 text-warning'
+              : 'border-success/30 bg-success/10 text-success'"
+          >
+            <TriangleAlert v-if="feedbackType === 'warning'" class="size-4" />
+            <CircleCheck v-else class="size-4" />
+            <AlertDescription :class="feedbackType === 'warning' ? 'text-warning' : 'text-success'">{{ feedback }}</AlertDescription>
+          </Alert>
+        </CardContent>
+      </Card>
     </div>
 
-    <div class="account-main">
-      <section class="panel recharge-panel">
-        <div class="section-heading compact">
-          <div>
-            <p class="eyebrow">账户充值</p>
-            <h2>余额充值</h2>
+    <!-- 右列：充值 + 订单 -->
+    <div class="grid gap-4 lg:gap-6">
+      <!-- 余额充值（tab=orders 时隐藏） -->
+      <Card v-if="!isOrdersTab" class="gap-4 py-5">
+        <CardHeader class="flex-row items-center justify-between gap-3 pb-0">
+          <div class="grid gap-1">
+            <p class="text-[13px] font-bold tracking-widest text-primary">账户充值</p>
+            <CardTitle class="font-display text-xl">余额充值</CardTitle>
           </div>
-          <span class="recharge-bill-badge">账单</span>
-        </div>
-
-        <div class="recharge-stats">
-          <div>
-            <strong>¥{{ formatMoney(auth.user?.balance || 0) }}</strong>
-            <span>当前余额</span>
-          </div>
-          <div>
-            <strong>¥{{ formatMoney(totalSpent) }}</strong>
-            <span>历史消费</span>
-          </div>
-          <div>
-            <strong>{{ ordersTotal }}</strong>
-            <span>请求次数</span>
-          </div>
-        </div>
-
-        <form class="recharge-form" @submit.prevent="submitRecharge">
-          <label class="field-label">
-            充值数量
-            <input v-model.number="rechargeAmount" class="input amount-input" type="number" min="1" max="2000" step="0.01" />
-          </label>
-
-          <div class="field-label">
-            选择支付方式
-            <div class="segmented recharge-methods">
-              <button type="button" :class="{ selected: paymentMethod === 'alipay' }" @click="paymentMethod = 'alipay'">
-                支付宝
-              </button>
-              <button type="button" :class="{ selected: paymentMethod === 'wxpay' }" @click="paymentMethod = 'wxpay'">
-                微信
-              </button>
+          <Badge variant="secondary">账单</Badge>
+        </CardHeader>
+        <CardContent class="grid gap-4">
+          <div class="grid gap-3 rounded-xl border bg-muted/50 p-4 sm:grid-cols-3">
+            <div class="grid gap-0.5">
+              <strong class="font-display text-2xl font-bold text-primary tabular-nums">¥{{ formatMoney(auth.user?.balance || 0) }}</strong>
+              <span class="text-[13px] text-muted-foreground">当前余额</span>
+            </div>
+            <div class="grid gap-0.5">
+              <strong class="font-display text-2xl font-bold text-foreground tabular-nums">¥{{ formatMoney(totalSpent) }}</strong>
+              <span class="text-[13px] text-muted-foreground">历史消费</span>
+            </div>
+            <div class="grid gap-0.5">
+              <strong class="font-display text-2xl font-bold text-foreground tabular-nums">{{ ordersTotal }}</strong>
+              <span class="text-[13px] text-muted-foreground">请求次数</span>
             </div>
           </div>
 
-          <div class="preset-section">
-            <div class="preset-heading">
-              <strong>选择充值额度</strong>
-              <span>充值金额将按 1:1 计入余额</span>
+          <form class="grid gap-4" @submit.prevent="submitRecharge">
+            <div class="grid gap-1.5">
+              <Label for="recharge-amount" class="text-sm font-bold">充值数量</Label>
+              <Input id="recharge-amount" v-model.number="rechargeAmount" type="number" min="1" max="2000" step="0.01" class="h-10" />
             </div>
-            <div class="recharge-presets">
-              <button
-                v-for="amount in presetAmounts"
-                :key="amount"
-                type="button"
-                :class="['recharge-preset', { selected: Number(rechargeAmount) === amount }]"
-                @click="rechargeAmount = amount"
-              >
-                <span class="preset-icon">¥</span>
-                <strong>{{ amount }} ¥</strong>
-                <small>实付 ¥{{ formatMoney(amount) }}</small>
-              </button>
+
+            <div class="grid gap-1.5">
+              <Label class="text-sm font-bold">选择支付方式</Label>
+              <Tabs :model-value="paymentMethod" @update:model-value="(value) => (paymentMethod = value)">
+                <TabsList class="h-10! w-full!">
+                  <TabsTrigger value="alipay" class="flex-1">支付宝</TabsTrigger>
+                  <TabsTrigger value="wxpay" class="flex-1">微信</TabsTrigger>
+                </TabsList>
+              </Tabs>
             </div>
-          </div>
 
-          <button class="primary-btn full" type="submit" :disabled="submitting">
-            {{ submitting ? '创建中...' : `充值 ¥${formatMoney(normalizedAmount)}` }}
-          </button>
-        </form>
-
-        <section class="voucher-panel">
-          <h3>兑换码充值</h3>
-          <div class="voucher-row">
-            <input
-              v-model.trim="redemptionCode"
-              class="input"
-              type="text"
-              maxlength="64"
-              placeholder="请输入兑换码"
-              @keyup.enter="submitRedemption"
-            />
-            <button class="secondary-btn" :disabled="redeeming" @click="submitRedemption">
-              {{ redeeming ? '兑换中...' : '兑换额度' }}
-            </button>
-          </div>
-          <small class="voucher-hint">输入兑换码即可兑换相应面额到余额，可直接用于打印扣费</small>
-        </section>
-      </section>
-
-      <!-- 兑换码结果弹窗：成功 / 失败 -->
-      <div v-if="redeemModal" class="modal-overlay" @click.self="closeRedeemModal">
-        <div class="modal-content redeem-result-modal">
-          <div class="modal-header">
-            <h2>{{ redeemModal.type === 'success' ? '兑换成功' : '兑换失败' }}</h2>
-            <button class="close-btn" @click="closeRedeemModal">×</button>
-          </div>
-          <div class="modal-body">
-            <p :class="['redeem-result-message', redeemModal.type]">{{ redeemModal.message }}</p>
-            <div class="form-actions">
-              <button class="primary-btn" @click="closeRedeemModal">确定</button>
+            <div class="grid gap-2">
+              <div class="flex items-baseline justify-between gap-2">
+                <strong class="text-sm text-foreground">选择充值额度</strong>
+                <span class="text-xs text-muted-foreground">充值金额将按 1:1 计入余额</span>
+              </div>
+              <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <button
+                  v-for="amount in presetAmounts"
+                  :key="amount"
+                  type="button"
+                  class="flex min-h-24 flex-col items-center justify-center gap-1 rounded-xl border p-3 text-center transition-colors hover:border-primary/50 hover:bg-accent/60"
+                  :class="Number(rechargeAmount) === amount ? 'border-primary bg-accent text-accent-foreground shadow-sm' : 'bg-card text-muted-foreground'"
+                  @click="rechargeAmount = amount"
+                >
+                  <strong class="font-display text-lg font-bold text-foreground tabular-nums">{{ amount }} ¥</strong>
+                  <small class="text-xs">实付 ¥{{ formatMoney(amount) }}</small>
+                </button>
+              </div>
             </div>
-          </div>
-        </div>
-      </div>
 
-      <section class="panel wide-panel orders-panel">
-        <div class="section-heading compact">
-          <h2>最近订单</h2>
-          <button class="secondary-btn small" @click="loadOrders" :disabled="loading">刷新</button>
-        </div>
-        <div v-if="orders.length === 0 && !loading" class="empty-preview compact-empty">暂无订单</div>
-        <article v-for="order in orders" :key="order.id" class="table-row account-order-row">
-          <span>{{ order.id }}</span>
-          <strong>¥{{ formatMoney(order.total_amount) }}</strong>
-          <span>{{ formatOrderType(order.order_type) }}</span>
-          <span>{{ statusText[order.status] || order.status }}</span>
-        </article>
-        <div v-if="orders.length > 0" class="orders-more">
-          <button v-if="hasMore" class="secondary-btn load-more-btn" @click="loadMoreOrders" :disabled="loadingMore">
-            <RefreshCw v-if="loadingMore" :size="16" class="spin" />
-            {{ loadingMore ? '加载中...' : '加载更多' }}
-          </button>
-          <p v-else class="orders-all-loaded">已显示全部订单</p>
-        </div>
-      </section>
+            <Button type="submit" size="lg" class="h-11 w-full font-bold" :disabled="submitting">
+              {{ submitting ? '创建中...' : `充值 ¥${formatMoney(normalizedAmount)}` }}
+            </Button>
+          </form>
+
+          <!-- 兑换码充值 -->
+          <div class="grid gap-2.5 rounded-xl border bg-muted/40 p-4">
+            <h3 class="text-sm font-bold text-foreground">兑换码充值</h3>
+            <div class="flex flex-col gap-2 sm:flex-row">
+              <Input
+                v-model.trim="redemptionCode"
+                type="text"
+                maxlength="64"
+                placeholder="请输入兑换码"
+                class="h-10 flex-1"
+                @keyup.enter="submitRedemption"
+              />
+              <Button variant="secondary" class="h-10" :disabled="redeeming" @click="submitRedemption">
+                {{ redeeming ? '兑换中...' : '兑换额度' }}
+              </Button>
+            </div>
+            <small class="text-xs leading-relaxed text-muted-foreground">
+              输入兑换码即可兑换相应面额到余额，可直接用于打印扣费
+            </small>
+          </div>
+        </CardContent>
+      </Card>
+
+      <!-- 最近订单 -->
+      <Card v-if="!isMineTab" class="gap-4 py-5">
+        <CardHeader class="flex-row items-center justify-between gap-3 pb-0">
+          <CardTitle class="font-display text-xl">最近订单</CardTitle>
+          <Button variant="secondary" size="sm" class="h-8" @click="loadOrders" :disabled="loading">刷新</Button>
+        </CardHeader>
+        <CardContent class="grid gap-2">
+          <div v-if="orders.length === 0 && !loading" class="rounded-lg border border-dashed bg-muted/40 px-4 py-8 text-center text-sm text-muted-foreground">
+            暂无订单
+          </div>
+          <div
+            v-for="order in orders"
+            :key="order.id"
+            class="grid gap-1 rounded-lg border bg-card p-3 text-sm max-md:bg-muted/30 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] sm:items-center sm:gap-4"
+          >
+            <span class="break-all font-medium text-foreground">{{ order.id }}</span>
+            <strong class="font-display text-primary tabular-nums">¥{{ formatMoney(order.total_amount) }}</strong>
+            <span class="text-muted-foreground">{{ formatOrderType(order.order_type) }}</span>
+            <span class="text-muted-foreground">{{ statusText[order.status] || order.status }}</span>
+          </div>
+          <div v-if="orders.length > 0" class="grid gap-2 pt-1">
+            <Button v-if="hasMore" variant="secondary" class="h-10 w-full" @click="loadMoreOrders" :disabled="loadingMore">
+              <RefreshCw :class="loadingMore ? 'animate-spin' : ''" />
+              {{ loadingMore ? '加载中...' : '加载更多' }}
+            </Button>
+            <p v-else class="text-center text-xs text-muted-foreground">已显示全部订单</p>
+          </div>
+        </CardContent>
+      </Card>
     </div>
+
+    <!-- 兑换码结果弹窗：成功 / 失败 -->
+    <Dialog :open="!!redeemModal" @update:open="(value) => !value && closeRedeemModal()">
+      <DialogContent class="max-sm:max-w-[calc(100vw-2rem)] sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle>{{ redeemModal?.type === 'success' ? '兑换成功' : '兑换失败' }}</DialogTitle>
+          <DialogDescription class="sr-only">兑换码兑换结果提示</DialogDescription>
+        </DialogHeader>
+        <p
+          class="text-sm leading-relaxed"
+          :class="redeemModal?.type === 'success' ? 'text-success' : 'text-destructive'"
+        >
+          {{ redeemModal?.message }}
+        </p>
+        <DialogFooter>
+          <Button class="h-10" @click="closeRedeemModal">确定</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </section>
 </template>
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { RefreshCw, Pencil } from 'lucide-vue-next'
-import { buildApiUrl, request } from '../api/client'
-import { useAuthStore } from '../stores/auth'
+import { CircleCheck, Pencil, RefreshCw, TriangleAlert } from 'lucide-vue-next'
+import { buildApiUrl, request } from '@/api/client'
+import { useAuthStore } from '@/stores/auth'
+
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -221,13 +284,14 @@ const normalizedAmount = computed(() => {
 
 // 个人中心按 ?tab= 拆分「订单」和「个人中心」视图（桌面与手机端均生效，见 UI_ADAPTATION 第 4.1 节）：
 // 订单只看最近订单，个人中心看余额/联系人/充值等其余内容。
-const mobileTabClass = computed(() => (route.query.tab === 'orders' ? 'mobile-tab-orders' : 'mobile-tab-me'))
+const isOrdersTab = computed(() => route.query.tab === 'orders')
+const isMineTab = computed(() => !isOrdersTab.value)
 
 // 历史消费与请求次数使用后端全量统计，不随分页加载变化。
 const totalSpent = computed(() => totalSpentAmount.value)
 const profilePhoneValid = computed(() => phonePattern.test(profileForm.value.phone))
 const profileComplete = computed(() => Boolean(auth.user?.real_name && phonePattern.test(auth.user?.phone || '')))
-// 已绑定且未进入编辑态时折叠联系人（仅手机端通过 CSS 生效；桌面端始终展开表单）
+// 已绑定且未进入编辑态时折叠联系人（仅手机端通过响应式类生效；桌面端始终展开表单）
 const profileCollapsed = computed(() => profileComplete.value && !editingProfile.value)
 
 function maskPhone(phone) {
