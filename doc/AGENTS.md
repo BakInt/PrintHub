@@ -33,7 +33,8 @@
 │   │   ├── middleware.py        # 限流、安全响应头、生产配置校验；CSRF helper 尚未在 main.py 注册
 │   │   ├── models/schemas.py    # 请求/响应 Pydantic 模型和支付方式归一化
 │   │   ├── routers/             # public/auth/files/orders/user/admin API
-│   │   ├── services/            # 文件、支付、计价、安全检测、认证会话、打印、按日统计、站点设置服务
+│   │   ├── services/            # 文件、支付、计价、安全检测、认证会话、打印、打印派发、按日统计、站点设置服务
+│   │   │   ├── print_dispatch.py # 打印派发：支付完成后调度后台线程异步执行 dispatch_order_print（防重/等 paid/补派发）
 │   │   │   └── stats.py        # 后台「每日数据统计」：把 UTC 时间戳按**本地时区**聚合成每日订单数/收入/失败数
 │   │   └── utils/security.py    # bcrypt 密码哈希和自定义 HMAC token
 │   ├── tests/smoke_test.py      # 后端冒烟测试（import app.main 需要 pycups，适合容器内跑）
@@ -79,7 +80,7 @@
 
 仓库中存在若干带 `BakingdeMini.lan的冲突副本...` 的同步冲突副本。正常维护时以不带冲突副本后缀的正式文件为准，除非用户明确要求从冲突副本恢复内容。`release/` 是打包产物快照，通常不要作为源码修改入口。
 
-仓库根目录的 `.gitattributes` 固定行尾策略：`* text=auto eol=lf` 让全部文本文件以 LF 入库（含 `*.sh`/`*.conf`，保证 Linux 容器内 shebang 可用），Windows 侧 `*.bat`/`*.cmd`/`*.ps1` 保持 CRLF，图片/PDF/DB 标记为 binary。因此在 Windows 上工作区若出现 CRLF，`git add` 时会提示 `CRLF will be replaced by LF`，这是预期行为，不要为了消除警告去改 `.gitattributes`。忽略规则集中在 `.gitignore`（Python 缓存、`.env*`、`config/`、`storage/`、`logs/`、`frontend/node_modules/`、`frontend/dist/`、`release/`、编辑器目录、NAS 冲突副本）。
+仓库根目录的 `.gitattributes` 固定行尾策略：`* text=auto eol=lf` 让全部文本文件以 LF 入库（含 `*.sh`/`*.conf`，保证 Linux 容器内 shebang 可用），Windows 侧 `*.bat`/`*.cmd`/`*.ps1` 保持 CRLF，图片/PDF/DB/woff2 字体标记为 binary。因此在 Windows 上工作区若出现 CRLF，`git add` 时会提示 `CRLF will be replaced by LF`，这是预期行为，不要为了消除警告去改 `.gitattributes`。忽略规则集中在 `.gitignore`（Python 缓存、`.env*`、`config/`、`storage/`、`logs/`、`frontend/node_modules/`、`frontend/dist/`、`release/`、编辑器目录、NAS 冲突副本）。
 
 ## 4. 后端入口和生命周期
 
@@ -104,7 +105,7 @@
 
 注意：`get_settings()` 不再用 `@lru_cache`，而是按 `config.json` 的 `mtime`/`size` 指纹热加载——改完配置文件无需重启即生效（`reload_settings()` 可强制重读）。优先级仍是「环境变量 > config.json > 内建默认值」，所以测试里改环境变量仍要在导入 `app.main` 之前设置。
 
-`config.json` 里的部署级键：`environment`、`app_secret`、`database_path`、`upload_dir`、`backup_dir`、`log_dir`、`cups_driver_dir`、`trusted_hosts`、`cors_origins`、`session_cookie_secure`、限流与会话有效期（含敏感路径专项限速 `sensitive_rate_limit_per_minute`，默认 10 次/分钟/IP，作用于登录/注册/上传，0=关闭）、`admin_username`/`admin_password`/`reset_admin_password`、`cups_job_timeout_seconds`、`printer_probe_timeout_seconds`、`print_status_check_interval_seconds`、`print_confirm_timeout_seconds`。相对路径按配置目录归一，整个目录搬家后配置依然有效。业务配置（价格、促销、阈值、上传限制、支付、CUPS、默认打印机）不在这个文件里，它们在 SQLite 的 `settings` 表、以后台页面为准；`cups_*`/`epay_*` 只在首次建库时从 `config.json` 播种进数据库。
+`config.json` 里的部署级键：`environment`、`app_secret`、`database_path`、`upload_dir`、`backup_dir`、`log_dir`、`cups_driver_dir`、`trusted_hosts`、`cors_origins`、`session_cookie_secure`、限流与会话有效期（`rate_limit_requests`/`rate_limit_window_seconds`/`access_token_expire_seconds`/`session_expire_seconds`/`captcha_expire_seconds`，含敏感路径专项限速 `sensitive_rate_limit_per_minute`，默认 10 次/分钟/IP，作用于登录/注册/上传，0=关闭）、登录锁定种子（`login_lock_threshold`/`login_lock_seconds`，见第 5 节，建库时播种进站点设置）、`admin_username`/`admin_password`/`reset_admin_password`、`cups_job_timeout_seconds`、`printer_probe_timeout_seconds`、`print_status_check_interval_seconds`、`print_confirm_timeout_seconds`。相对路径按配置目录归一，整个目录搬家后配置依然有效。业务配置（价格、促销、阈值、上传限制、支付、CUPS、默认打印机）不在这个文件里，它们在 SQLite 的 `settings` 表、以后台页面为准；`cups_*`/`epay_*` 只在首次建库时从 `config.json` 播种进数据库。
 
 ## 5. 认证和会话
 
@@ -136,11 +137,13 @@
 3. `convert_to_pdf()`：
    - PDF 原样使用。
    - PNG/JPG/JPEG 用 Pillow 转成 `converted.pdf`。
-   - Office 文件调用 LibreOffice headless 转成 `converted.pdf`。转换使用带参数的 PDF 导出过滤器（`writer_pdf_Export` 开启 `EmbedStandardFonts`/`UseTaggedPDF`），强制把用到的字体子集嵌入 PDF，确保下游打印不再依赖打印机字体、避免乱码。转换成功后立即调用 `flatten_pdf_smask()`（见 `backend/app/services/pdf_postprocess.py`）拍平图像软遮罩，避免公式/透明图在 CUPS 光栅化时被整块丢弃。
+   - Office 文件调用 LibreOffice headless 转成 `converted.pdf`。转换使用带参数的 PDF 导出过滤器（`writer_pdf_Export` 开启 `EmbedStandardFonts`/`UseTaggedPDF`，`SelectPdfVersion=17` 即 PDF 1.7），强制把用到的字体子集嵌入 PDF，确保下游打印不再依赖打印机字体、避免乱码。导出参数走**三级降级链**：PDF 1.7 参数版 → PDF 1.4 参数版（`SelectPdfVersion=0`）→ 无参数默认导出——旧版本 LibreOffice 不识别 FilterData 参数时会整体转换失败，逐级降级保证「转换成功」优先于「参数最优」；三级共享 180 秒总预算，避免最坏情况把上传请求拖到 3 倍超时。转换成功后立即调用 `flatten_pdf_smask()`（见 `backend/app/services/pdf_postprocess.py`）拍平图像软遮罩，避免公式/透明图在 CUPS 光栅化时被整块丢弃。
 4. `page_count()` 用 PyPDF2 读取页数，并校验最大页数；上限取后台「系统设置」的「最大页数」（数据库 `settings` 表的 `max_pages`），环境变量 `MAX_PAGES` 只在设置缺失或非法时作为兜底默认值。
-5. `calculate_black_coverage_details()` 用 pdf2image/Poppler 把 PDF 每页转图片，统计灰度 `< 128` 的深色像素比例，保存平均覆盖率和逐页覆盖率。
+5. `calculate_black_coverage_details()`（实现于 `backend/app/services/safety.py`）用 pdf2image/Poppler 把 PDF 每页转图片，用 PIL 的 `histogram()`（C 实现，替代旧的逐像素 Python 循环，大页数文档上传明显提速）统计灰度 `< 128` 的深色像素比例，保存平均覆盖率和逐页覆盖率。
 6. `safety_result()` 按覆盖率阈值判断是否安全；阈值取后台「系统设置」的「覆盖率阈值」（数据库 `settings` 表的 `safety_coverage_limit`），环境变量 `SAFETY_COVERAGE_LIMIT` 只在设置缺失或非法时作为兜底默认值。因此后台改阈值后，之后新上传的文件立即按新阈值判定；已入库文件保留其上传时的 `is_safe` 结果，不会追溯重算。
-7. 文件入库。转换或检测失败的文件也会以 `status='failed'`、`is_safe=0` 记录；安全失败会写入 `alerts`。
+7. **按需光栅化标记**（`files.needs_rasterize`，`SCHEMA` 默认 1，旧库经 `SCHEMA_MIGRATIONS["files"]` 补列）：上传入库时写入——Office 转换件标记 1（公式/图元兼容性风险）、图片转换件标记 0、PDF 用 `pdf_postprocess.pdf_has_image_masks()` 检测（含 `/SMask`/`/Mask` 遮罩=1，纯净=0）。打印派发只对标记 1 的文件做打印前整页 300dpi 光栅化（见 6.7），纯净 PDF 直接提交原文件，省掉每页光栅化的几十秒耗时并保留文字矢量；旧数据缺标记时一律按 1 处理（宁慢勿丢图）。
+8. **转换后字体自检**（`audit_converted_fonts()`，见 `backend/app/services/files.py`，把「打印乱码」从黑盒变成可归因告警）：① `pdffonts` 检查转换产物是否有未嵌入（`emb=no`）字体——未嵌入意味着打印端必然字体替换；② 解析 docx/pptx 的 `fontTable.xml`（xlsx 为 `styles.xml`）提取文档请求的字体名，比对 `fc-list` 已装字体与 fontconfig 映射表（本系统 `docker/fontconfig/49-cloud-print-aliases.conf` + Debian 度量兼容映射 arial/times/courier/calibri/cambria/helvetica），缺失的字体名单独告警。两类告警都写入后台「告警」供管理员照单补装，并随上传响应返回 `font_warning`/`missing_fonts_warning` 字段。缺 `pdffonts`/`fc-list`（如 Windows 开发机）或任何异常都静默降级，绝不阻断上传。
+9. 文件入库。转换或检测失败的文件也会以 `status='failed'`、`is_safe=0` 记录；安全失败、OLE 公式风险与字体自检告警都会写入 `alerts`。
 
 补充：上传时 `inspect_ole_formula_risk()` 会探测 Office 文档中的老式 OLE 公式（MathType/公式3.0，ProgID=`Equation.*`/`DSMT4`）是否带有可渲染的 WMF/EMF 预览图。这类公式在服务器无 MathType 时无法激活渲染，但 LibreOffice 能直接光栅化其 WMF/EMF 矢量预览图，公式即可正常打印。若某文档只有 OLE 二进制而无任何预览图，则判定为高风险：上传响应返回 `formula_warning` 并写入一条告警，提示用户改用 Word/WPS 另存 PDF 后再上传。
 
@@ -187,7 +190,7 @@
 - 计价：张数按 `ceil(总页数/2) × 份数` 折算，标准模式整单使用双面价（`duplex_price`）；覆盖率模式仍逐页按覆盖率分档计价（合并不改变每页单价），整单使用双面基础价（`coverage_duplex_base_price`）。合计只有 1 页时按 1 张双面价计（实际只打正面），**不再返回 400**。
 - `POST /api/price` 与 `POST /api/payment/create` 都接受布尔 `merge_duplex`（缺省 False=全部单面）。旧的按份字段 `double_sided`/`file_settings`/`use_auto_duplex` 已从 `PrintSettings` 与 `/api/price` 的 file_ids 模式移除（pydantic 忽略未知字段，旧客户端携带也不会报错，只会按单面处理）；`/api/price` 的 page_count 旧模式仍保留 `double_sided` 参数。
 - `calculate_files_price_detail(db, files, copies, merge_duplex=False)`：False 时全部文档按单面逐页求和；True 时走合并双面分支（`_merged_duplex_base_amount()`）。返回 detail 额外携带 `merge_duplex` 与 `total_pages`（各文档页数之和）。`resolve_file_double_sided()` 已删除。
-- 打印派发：`orders.merge_duplex=1` 时 `dispatch_order_print()` 用 `pdf_postprocess.merge_pdfs()` 把全部 `order_items` 的 PDF 按下单顺序合并成一个临时 PDF，作为一个双面任务（`double_sided=True`）调用一次 `print_pdf()`，提交后删除临时文件；合并或打印失败整单置为 `print_failed`。`merge_duplex=0/NULL` 走原有逐份循环（历史订单行为不变）。
+- 打印派发：`orders.merge_duplex=1` 时 `dispatch_order_print()`（`services/print_dispatch.py`，经异步派发入口调用，见 6.7）用 `pdf_postprocess.merge_pdfs()` 把全部 `order_items` 的 PDF 按下单顺序合并成一个临时 PDF，作为一个双面任务（`double_sided=True`）调用一次 `print_pdf()`，提交后删除临时文件；合并或打印失败整单置为 `print_failed`。`merge_duplex=0/NULL` 走原有逐份循环（历史订单行为不变）。
 
 折扣规则：
 
@@ -212,7 +215,7 @@
    - 必须登录。
    - 校验支付后余额不能低于 `min_balance`。
    - 创建订单和支付记录后扣减余额，订单置为 `paid`。
-   - 立即调用 `dispatch_order_print()`。
+   - 调用 `dispatch_print_files_if_present()`（`backend/app/services/print_dispatch.py`）：生产默认 `ASYNC_DISPATCH=True`，只调度后台派发线程、请求立即返回，订单先停在 `paid`，由后台线程完成派发后转 `printing`/`print_failed`（见 6.7）；`ASYNC_DISPATCH=False` 时在调用方事务内同步派发（冒烟测试用）。
 7. 如果是 `alipay` 或 `wxpay`：
    - 创建 `pending` 订单和 `payments` 记录。
    - 返回 `/api/payment/submit/{order_id}`，前端跳转到该地址。
@@ -245,18 +248,20 @@
 
 ### 6.7 打印
 
-相关文件：`backend/app/services/printer.py`、`backend/app/services/print_monitor.py`、`scripts/test_printer.py`。
+相关文件：`backend/app/services/print_dispatch.py`、`backend/app/services/printer.py`、`backend/app/services/print_monitor.py`、`scripts/test_printer.py`。
 
 打印方式完全由运行平台决定（`print_mode` 设置与 `PRINT_MODE` 环境变量已整体移除，没有可选打印模式，也没有 mock 模拟）：
 
 - Linux/macOS：通过 CUPS 命令管理和打印，主要命令包括 `lpstat`、`lpinfo`、`lpadmin`、`lpoptions`、`cupsenable`、`cupsdisable`、`lp`、`cancel`。
 - Windows：使用 PowerShell 读取系统已安装打印队列，并用 `config.json` 的 `sumatra_pdf_path` 或 `windows_pdf_print_command` 指向的 SumatraPDF 打印 PDF，未配置时回退系统 `PrintTo`；macOS 额外读取 `system_profiler SPPrintersDataType` 补充队列来源。
 
-`printer.print_pdf()` 不再接收 `print_mode` 参数，签名为 `print_pdf(pdf_path, copies, double_sided, printer_name=None, default_printer=None, use_color: bool | None = None)`；`print_jobs_active(job_ids)` 也不再接收打印模式。
+`printer.print_pdf()` 不再接收 `print_mode` 参数，签名为 `print_pdf(pdf_path, copies, double_sided, printer_name=None, default_printer=None, use_color: bool | None = None, rasterize: bool | None = None)`；`print_jobs_active(job_ids)` 也不再接收打印模式。
 
-`dispatch_order_print()` 会根据订单的 `printer_name`、settings 中的 `default_printer` 和份数下发打印。`orders.merge_duplex=1`（合并双面打印单）时，先用 `pdf_postprocess.merge_pdfs()` 把全部 `order_items` 的 PDF 按下单顺序合并成一个临时 PDF，作为单个双面任务调用一次 `print_pdf()`（不同文档的页面连续排到纸张正反面），提交后删除临时文件；`merge_duplex=0/NULL`（历史订单）保持逐份读取 `order_items.is_double_sided` 作为该文件的单双面参数分别调用 `print_pdf()`。成功后订单状态更新为 `printing`，失败（含合并失败）则为 `print_failed` 并写入 `print_error`。
+**异步派发**（支付完成后不再让 HTTP 请求等待光栅化与打印提交）：`routers/orders.py` 的余额支付路径与 `epay.complete_epay_payment(dispatch_callback=...)` 都调 `dispatch_print_files_if_present()`（`backend/app/services/print_dispatch.py`）——无 `order_items` 的非打印单（充值/测试单）直接返回；生产默认 `ASYNC_DISPATCH = True`，`schedule_order_dispatch()` 起一个后台守护线程（独立数据库连接）执行真正的 `dispatch_order_print()`，HTTP 请求立即返回，订单先停在 `paid`（前端排队口径本就把 `paid` 与 `printing` 都算作排队中）；`ASYNC_DISPATCH = False` 时回到旧的同步行为（在调用方事务内派发，冒烟测试等需要确定性断言的场景用）。防重与兜底：进程内 `_inflight_orders` 集合对同一订单去重，重复回调/并发调度不会重复打印；后台线程 `_wait_for_paid()` 最多等 ~12 秒（覆盖「先调度、后提交事务」的窗口——订单行尚不可见或仍为 pending 都继续轮询），已处于 `printing`/`completed`/`print_failed` 的订单直接退出；派发线程异常时把仍为 `paid` 的订单写回 `print_failed`（`print_error` 前缀「打印派发异常：」）；进程重启等极端情况遗留的 paid 未派发订单，由支付回调的补派发分支兜底（见 6.6）。
 
-`print_pdf()`（CUPS 路径）在用 `lp` 提交前会调用 `rasterize_pdf_for_print()`（见 `backend/app/services/pdf_postprocess.py`），用 poppler `pdftoppm` 把待打印 PDF 每页光栅化成 300dpi 不透明位图并重组为「纯图像 PDF」再提交。这样远端 CUPS/打印机的 RIP 只需绘制不透明图片，彻底规避老式 OLE 公式/WMF/EMF/透明图元在远端 RIP 上被整块丢弃的「上传打印后化学式消失」问题（详见 6.1）。它仅作用于打印副本、不改动入库/预览的原始 PDF，页数页序不变，光栅化失败会安全降级为直接打印原 PDF；打印任务提交后本地临时图像 PDF 会被删除。光栅化每页还会经 `_darken_faint_content()` 套分段灰度 LUT，把老式公式预览图的中灰笔画压到纯黑、保护白底不发灰，解决「公式打印出来颜色很淡」（详见 6.1）。Windows 走 SumatraPDF/`PrintTo`，本身就是本地整页光栅化，不额外处理。
+`dispatch_order_print()`（实现于 `print_dispatch.py`）会根据订单的 `printer_name`、settings 中的 `default_printer` 和份数下发打印，并按每个文件的 `files.needs_rasterize` 标记（见 6.1 第 7 步）向 `print_pdf()` 传 `rasterize` 参数。`orders.merge_duplex=1`（合并双面打印单）时，先用 `pdf_postprocess.merge_pdfs()` 把全部 `order_items` 的 PDF 按下单顺序合并成一个临时 PDF，作为单个双面任务调用一次 `print_pdf()`（不同文档的页面连续排到纸张正反面），光栅化标记取全部文件按需标记的「或」，提交后删除临时文件；`merge_duplex=0/NULL`（历史订单）保持逐份读取 `order_items.is_double_sided` 作为该文件的单双面参数分别调用 `print_pdf()`。成功后订单状态更新为 `printing`，失败（含合并失败）则为 `print_failed` 并写入 `print_error`。
+
+`print_pdf()`（CUPS 路径）在用 `lp` 提交前按 `rasterize` 三态决定是否调用 `rasterize_pdf_for_print()`（见 `backend/app/services/pdf_postprocess.py`）：`None`（旧调用方兼容，保持「一律光栅化」）或 `True` 时光栅化，`False` 时跳过——纯净 PDF 与图片转换件直接提交原始矢量文件，省去每页 300dpi 光栅化的几十秒耗时并保留文字矢量。光栅化用 poppler `pdftoppm` 把待打印 PDF 每页渲染成 300dpi 不透明位图并重组为「纯图像 PDF」再提交，远端 CUPS/打印机的 RIP 只需绘制不透明图片，彻底规避老式 OLE 公式/WMF/EMF/透明图元在远端 RIP 上被整块丢弃的「上传打印后化学式消失」问题（详见 6.1）。它仅作用于打印副本、不改动入库/预览的原始 PDF，页数页序不变，光栅化失败会安全降级为直接打印原 PDF；打印任务提交后本地临时图像 PDF 会被删除。光栅化每页还会经 `_darken_faint_content()` 套分段灰度 LUT，把老式公式预览图的中灰笔画压到纯黑、保护白底不发灰，解决「公式打印出来颜色很淡」（详见 6.1）。Windows 走 SumatraPDF/`PrintTo`，本身就是本地整页光栅化，不额外处理。
 
 彩色打印（`use_color` 三态，保证向后兼容）：`None`（历史订单/旧前端未携带）**不下发任何色彩参数**、保留原有加深 LUT，与本次改动前完全一致；`True` 时 CUPS 分支给 `lp` 追加 `-o print-color-mode=color`，并以 `rasterize_pdf_for_print(pdf_path, darken=False)` 光栅化，只去透明、不做加深/灰阶映射，文件按原始色彩提交；`False` 时追加 `-o print-color-mode=monochrome` 并沿用加深逻辑。整页 300dpi 光栅化重组在三种情况下都保留（它是防「公式整块消失」的根治手段，彩色位图不属于转黑白）。`dispatch_order_print()` 读取 `orders.use_color`（NULL→None，否则 bool）作为 `use_color` 传给 `print_pdf()`。Windows（SumatraPDF/`PrintTo`）分支目前只处理打印机与份数，`double_sided` 与 `use_color` 都未生效（与改动前一致）。
 
@@ -315,7 +320,7 @@
 
 文件接口：
 
-- `POST /api/upload`：上传、转换、检测并入库。匿名上传保留（访客打印核心流程），但受敏感路径专项限速（默认 20 次/分钟内按 `sensitive_rate_limit_per_minute` 配置）且文件归属上传者（登录用户）或标记为 guest（`user_id` NULL）；畸形/损坏文件转换失败统一返回 400「文件无法解析…」而非 500（安全修复 V-10.2）。
+- `POST /api/upload`：上传、转换、检测并入库。匿名上传保留（访客打印核心流程），但受敏感路径专项限速（默认 10 次/分钟/IP，按 `sensitive_rate_limit_per_minute` 配置）且文件归属上传者（登录用户）或标记为 guest（`user_id` NULL）；畸形/损坏文件转换失败统一返回 400「文件无法解析…」而非 500（安全修复 V-10.2）。响应携带 `formula_warning`（OLE 公式缺预览图）与 `font_warning`/`missing_fonts_warning`（字体自检）提示字段，同时写入后台告警（见 6.1 第 8 步）。
 - `GET /api/files/{file_id}/preview`：PDF inline 预览。
 - `POST /api/check-safety`：读取某文件安全检测结果。
 
@@ -493,6 +498,7 @@ docker compose logs -f cloud-print
 - 修改兑换码的「限制每个用户最大兑换次数」（`per_user_max_times`）时：该列须在 `SCHEMA` 与 `SCHEMA_MIGRATIONS["redemption_codes"]` 同时存在，且默认值 0（0=不限制，保持原「按总可用次数」逻辑）；`create_code()` 的第 6 个位置参数要在 `backend/app/routers/admin.py` 里透传 `payload.per_user_max_times`（漏传会让这个限制静默失效）。`redeem()` 里**两种模式共用同一条条件 UPDATE**（`WHERE id = ? AND used_count < usable_count`）来占用全局次数；「每个用户最大兑换次数」只是在 `BEGIN IMMEDIATE` 写锁内额外多做一道 `count_user_redemptions() >= per_user_max_times` 判定，**不要**给 `per_user_max_times>0` 的码改成无条件累加 `used_count`（那正是旧版「每用户一次就忽略总次数」的错误语义，会让 `usable_count=1` 时第二个用户也被放行）。旧库的 `per_user_once=1` 由 `migrate_redemption_per_user_limit()` 一次性换算成 `per_user_max_times=1`，代码不再读写旧列。后台兑换码列表已精简为 5 列（兑换码 / 兑换面额 / 有效期 / 使用状态 / 操作），`per_user_max_times`、已兑换次数、生成时间、兑换用户等次要信息不在表格里，全部移入右侧「兑换码详情」Sheet 抽屉中展示，弹窗「手动新增兑换码」是 shadcn `Dialog` + `Switch`/`Input`/`Tabs` 组合（无自定义 CSS，外观来自 `components/ui/*` 官方组件 + Tailwind 工具类）：分组卡片「单用户使用限制」内是 `Switch`（绑定 `redemptionForm.per_user_limit_enabled`）与「最大使用次数」数字输入框（开关关闭时 disabled），底部短提示的 N 由纯展示计算属性 `perUserMaxTimesHint` 给出——开启时显示实际填写值、关闭时显示占位 `N`。绑定仍是 `redemptionForm.per_user_limit_enabled` / `per_user_max_times`，提交时关闭则发 0，业务逻辑未变。桌面表格用 shadcn `Table`（`max-md:hidden`），手机端折叠为卡片列表（`md:hidden`），列数/列宽改动直接改模板里的 Tailwind 类。专项回归测试：`python tests/redemption_per_user_test.py`（Windows 本地可跑，不需 pycups/CUPS）。
 - 修改兑换码有效期方式（`expiry_mode` = `days`/`date` 二选一）时：**刻意不加数据库列**，语义完全由 `(valid_days, expires_at)` 组合表达——`expires_at` 非空且 `valid_days=0` 视为 `date`，否则 `days`，读取一律走 `expiry_mode_of(code_row)`，不要新增 `expiry_mode` 列，也不要改动 `code_status()` 的判断顺序（**过期判断必须始终优先于次数判断**）。日期归一化集中在 `backend/app/services/redemption.py` 的 `normalize_expire_date()`（接受 `YYYY-MM-DD`、`date`/`datetime`、带时间 ISO 串，一律落到**当天 23:59:59** 的 `isoformat(timespec="seconds")`；非法值返回 `None`）；服务层遇非法日期回退「按天数」，写接口由 `AdminRedemptionCreate.normalize_redemption_payload` 与 `AdminRedemptionBatchCreate.normalize_expiry` 拦住（报 `请选择有效的到期日期（格式 YYYY-MM-DD）`），并把非 `date` 模式的 `expire_date` 清空、`date` 模式的 `valid_days` 强制归零，避免两种方式同时生效。`create_code()` 新增第 7 个（关键字）参数 `expires_at`、`batch_generate_codes()` 新增第 6 个，`backend/app/routers/admin.py` 必须透传 `expires_at=payload.expire_date`（**漏传会让「指定到期日期」静默退化成永久有效**）。前端手动新增与批量生成两个弹窗的有效期行都是 shadcn `Tabs`（「按天数」/「指定到期日期」，`v-model` 绑定 `expiry_mode`）+ 当前模式输入控件（`v-if/v-else` 二选一渲染，不会同时出现两个输入框），外观全部来自官方组件与 Tailwind 工具类。专项用例：`python tests/redemption_per_user_test.py` 里的 `test_expire_date_mode()` / `test_expire_date_schema()`。
 - 修改打印时，注意打印方式完全按运行平台分流（Windows 走系统队列/SumatraPDF，Linux/macOS 走 CUPS 命令），已没有 `print_mode` 配置项，mock 模拟模式也已移除。自动支付回调可能触发真实打印。
+- 修改打印派发（`services/print_dispatch.py`）时：保持「请求线程只调度、后台线程派发」的异步语义，不要把 `dispatch_order_print()` 挪回 HTTP 请求内同步执行（大文档光栅化会把支付/回调请求拖到几十秒）；`_inflight_orders` 去重、`_wait_for_paid()` 等待窗口与「已派发订单直接退出」的防重逻辑必须保留；`ASYNC_DISPATCH = False` 仅给冒烟测试等确定性场景用，别在运行时改它；新调用方一律通过 `dispatch_print_files_if_present()` 接入（它会自动跳过无打印文件的非打印单）。按需光栅化由 `files.needs_rasterize`（上传时打标，见 6.1 第 7 步）与 `print_pdf(rasterize=...)` 三态参数配套，改动任意一侧都要保持「缺标记按 1（一律光栅化）」的兜底，宁慢勿丢图。
 - 修改彩色打印 / 自动双面能力时，要同步 `database.py` 的 `SCHEMA` 与 `SCHEMA_MIGRATIONS`（`printers.is_support_color`/`is_support_auto_duplex`、`orders.use_color`、`orders.merge_duplex`）、`cups_printer.py` 的 `_save_metadata()` 与打印机输出对象、公开接口 `/api/print-options`、`orders.py` 的能力兜底校验、`print_pdf(use_color=...)` 与 `rasterize_pdf_for_print(darken=...)`、合并双面的 `pdf_postprocess.merge_pdfs()`，以及首页条件渲染和后台编辑弹窗。
 - 修改上传或转换时，要保留文件头校验、大小限制、页数限制、覆盖率检测和失败文件入库。
 - 修改后台概览的「每日数据统计」时：分日口径集中在 `backend/app/services/stats.py`。库里时间戳**统一是 UTC 文本**（`orders.created_at` 由 SQLite `CURRENT_TIMESTAMP` 生成 `YYYY-MM-DD HH:MM:SS`，而 `paid_at`/`printed_at` 由 `datetime.utcnow().isoformat()` 生成 `YYYY-MM-DDTHH:MM:SS.ffffff`，**同一张表两种格式并存**），所以 SQL 里先用 `datetime(created_at)` 归一化、按 `strftime('%Y-%m-%d %H', ...)` 聚成 UTC 小时桶，再由 Python 用无参 `astimezone()` 折算本地日期——**不要**直接对字符串做 `substr(created_at, 1, 10)` 分日（那是 UTC 日期，东八区下会把本地 0-8 点的订单算到前一天）。窗口边界用「本地日 00:00 → UTC 半开区间」反算，不要在 SQL 里写死时区偏移。接口是 `GET /api/admin/daily-stats`（`days` 1-90、默认 7），路由函数名与 `stats.py` 的 `daily_stats` 同名，所以**必须用别名引入**（`from ..services.stats import daily_stats as build_daily_stats`），否则路由会调用自己。前端图表在 `frontend/src/components/DailyStatsCard.vue`，基于 shadcn-vue Chart（unovis）；颜色一律走 `var(--chart-1)`/`var(--chart-2)` 等 CSS 变量，不要为了「图表好看」写死 hex。专项回归测试：`python tests/daily_stats_test.py`（Windows 本地可跑，不需 pycups/CUPS）。
@@ -512,6 +518,7 @@ docker compose logs -f cloud-print
 - 当前支付返回的是后端自动提交表单 URL，不是直接二维码图片 URL。
 - 后台概览的「每日数据统计」图表已迁移到 **shadcn-vue 官方 Chart 组件**（`frontend/src/components/ui/chart/`，底层 unovis，`@unovis/vue` + `@unovis/ts`；图表颜色跟随 `--chart-1..5` CSS 变量）。此前是手写内联 SVG、零图表依赖；引入依赖的同时已更新 `pnpm-lock.yaml`，Docker 构建仍走 `pnpm install --frozen-lockfile`。
 - 当前打印完成状态依赖 CUPS 队列确认；Windows 下无法可靠自动确认完成（mock 模拟模式已移除）。
+- 打印派发是后台线程异步执行的（原方案在支付/回调请求内同步派发，大文档会把请求拖到几十秒）：支付接口先返回、订单停在 `paid`，后台线程完成光栅化与 `lp` 提交后转 `printing`/`print_failed`；排队口径把 `paid` 与 `printing` 都算排队中，前端轮询逻辑不变。
 - 当前部署方式是 Docker Compose 单容器：FastAPI 直接托管前端静态文件，没有独立 Nginx 前端容器；SQLite、上传缓存、备份、日志和 `config.json` 都在 `./config` 绑定挂载目录里。
 - 彩色打印与合并双面打印只在 Linux/macOS 的 CUPS 链路真正生效（`lp -o print-color-mode=color|monochrome`、`lp -o sides=two-sided-long-edge`）；Windows 的 SumatraPDF/`PrintTo` 分支只处理打印机与份数，`double_sided`、`merge_duplex` 与 `use_color` 都不生效（与改动前一致）。合并双面是把全部文档合并成一个双面打印流（跨文档正反面连打），不是整单多份独立双面。
 
@@ -525,9 +532,10 @@ HomeView.vue
   -> GET /api/print-options           # 默认打印机的彩色/自动双面能力，决定首页是否展示对应选项
   -> POST /api/upload
     -> save_upload()
-    -> convert_to_pdf()
+    -> convert_to_pdf()               # LibreOffice 三级降级导出 + flatten_pdf_smask()
     -> page_count()
     -> calculate_black_coverage_details()
+    -> needs_rasterize 打标 + audit_converted_fonts() 字体自检
     -> files 表 + alerts 表
   -> POST /api/price
   -> POST /api/payment/create
@@ -536,9 +544,11 @@ HomeView.vue
   -> GET /api/payment/submit/{order_id}
     -> 易支付网关
   -> GET|POST /api/payment/notify
-    -> complete_epay_payment()
-    -> dispatch_order_print()
-    -> print_pdf()
+    -> complete_epay_payment(dispatch_callback=dispatch_print_files_if_present)
+    -> schedule_order_dispatch()      # 请求立即返回，订单停在 paid
+      -> 后台线程 dispatch_order_print()
+        -> print_pdf()                # 按 needs_rasterize 决定是否先光栅化
+      -> 订单置 printing / print_failed
     -> print_monitor 后台确认 completed 或 print_failed
 ```
 
@@ -553,7 +563,7 @@ HomeView.vue 选择 balance
     -> 校验余额和最低余额
     -> 扣减 users.balance
     -> 订单置为 paid
-    -> dispatch_order_print()
+    -> dispatch_print_files_if_present()  # 异步调度，请求立即返回；后台线程 dispatch_order_print()
 PaymentView.vue
   -> GET /api/orders/{order_id}
 ```
@@ -626,13 +636,14 @@ AdminView.vue 打印机 tab
 
 - 登录、验证码、会话、权限：`backend/app/routers/auth.py`、`backend/app/services/auth_session.py`、`backend/app/routers/deps.py`、`backend/app/utils/security.py`、`frontend/src/stores/auth.js`、`frontend/src/views/AuthView.vue`（登录失败剩余次数/锁定提示的样式分级也在这里）。
 - 站点设置（标题/favicon/备案号/登录锁定策略）：`backend/app/services/site_settings.py`（唯一读写入口）、`backend/app/routers/admin.py`（`/site-settings` GET/PUT/favicon 上传）、`backend/app/routers/public.py`（`/api/site-settings` 与 `/api/site/favicon`）、`backend/app/models/schemas.py`（`SiteSettingsUpdate`）、`backend/app/database.py`（`login_lock_*` 播种）、`frontend/src/stores/site.js`（全局应用）、`frontend/src/components/layout/IcpFooter.vue`（备案条）、`frontend/src/views/AdminView.vue`（「站点设置」tab）。
-- 上传、转换、预览、安全检测：`backend/app/routers/files.py`、`backend/app/services/files.py`、`backend/app/services/safety.py`、`frontend/src/views/HomeView.vue`。
+- 上传、转换、预览、安全检测：`backend/app/routers/files.py`、`backend/app/services/files.py`（上传校验、LibreOffice 三级降级转换、字体自检）、`backend/app/services/pdf_postprocess.py`（SMask 拍平、遮罩检测、打印光栅化、合并 PDF）、`backend/app/services/safety.py`（覆盖率统计与安全判定）、`frontend/src/views/HomeView.vue`。
 - 计价、覆盖率阶梯、促销：`backend/app/services/pricing.py`、`backend/app/routers/public.py`、`backend/app/routers/admin.py`、`frontend/src/views/HomeView.vue`、`frontend/src/views/AdminView.vue`。
-- 打印订单、支付、易支付回调：`backend/app/routers/orders.py`、`backend/app/services/epay.py`、`backend/app/services/printer.py`、`frontend/src/views/PaymentView.vue`。
+- 打印订单、支付、易支付回调：`backend/app/routers/orders.py`、`backend/app/services/epay.py`、`backend/app/services/print_dispatch.py`（异步派发）、`backend/app/services/printer.py`、`frontend/src/views/PaymentView.vue`。
 - 用户资料、余额充值、个人中心订单：`backend/app/routers/user.py`、`backend/app/services/epay.py`、`frontend/src/views/DashboardView.vue`。
 - 兑换码（后台生成 + 用户兑换，含「每个用户最大兑换次数」`per_user_max_times`）：`backend/app/services/redemption.py`（`redeem()` 双重校验 + `count_user_redemptions()`/`per_user_max_times_of()`/`has_redeemed()`）、`backend/app/routers/admin.py`（`/redemptions`，`create_code()` 必须透传第 6 个位置参数）、`backend/app/routers/user.py`（`POST /api/user/redeem`）、`backend/app/models/schemas.py`（`AdminRedemptionCreate`/`RedeemRequest`）、`backend/app/database.py`（`SCHEMA` + `SCHEMA_MIGRATIONS["redemption_codes"]["per_user_max_times"]` + `migrate_redemption_per_user_limit()`）、`frontend/src/views/AdminView.vue`、`frontend/src/views/DashboardView.vue`、`backend/tests/redemption_per_user_test.py`。
 - 打印机管理和真实打印：`backend/app/services/printer.py`、`backend/app/services/print_monitor.py`、`backend/app/routers/admin.py`、`scripts/test_printer.py`。
-- 彩色打印、合并双面打印能力（前台条件渲染 + 后端兜底校验 + 合并派发）：`backend/app/routers/public.py`（`GET /api/print-options`）、`backend/app/services/cups_printer.py`（`_save_metadata()` 保存两项能力）、`backend/app/routers/orders.py`（能力兜底 400、`dispatch_order_print()` 的合并分支）、`backend/app/services/pricing.py`（`calculate_files_price_detail(merge_duplex=...)`）、`backend/app/services/pdf_postprocess.py`（`merge_pdfs()` 合并、`rasterize_pdf_for_print(darken=...)`）、`backend/app/services/printer.py`（`use_color` → `lp -o print-color-mode=`）、`frontend/src/views/HomeView.vue`、`frontend/src/views/AdminView.vue`。
+- 彩色打印、合并双面打印能力（前台条件渲染 + 后端兜底校验 + 合并派发）：`backend/app/routers/public.py`（`GET /api/print-options`）、`backend/app/services/cups_printer.py`（`_save_metadata()` 保存两项能力）、`backend/app/routers/orders.py`（能力兜底 400）、`backend/app/services/print_dispatch.py`（`dispatch_order_print()` 的合并分支与 `rasterize` 传参）、`backend/app/services/pricing.py`（`calculate_files_price_detail(merge_duplex=...)`）、`backend/app/services/pdf_postprocess.py`（`merge_pdfs()` 合并、`rasterize_pdf_for_print(darken=...)`）、`backend/app/services/printer.py`（`use_color` → `lp -o print-color-mode=`）、`frontend/src/views/HomeView.vue`、`frontend/src/views/AdminView.vue`。
+- 打印异步派发与按需光栅化：`backend/app/services/print_dispatch.py`（调度/防重/`_wait_for_paid()`/`ASYNC_DISPATCH` 开关）、`backend/app/routers/files.py`（上传时写 `needs_rasterize` 标记）、`backend/app/services/pdf_postprocess.py`（`pdf_has_image_masks()`）、`backend/app/services/printer.py`（`print_pdf(rasterize=...)` 三态）、`backend/app/database.py`（`files.needs_rasterize` 列与迁移）。
 - 数据表、默认设置、旧库迁移：`backend/app/database.py`，同时检查后台设置表单和 `backend/tests/smoke_test.py`。
 - 后台概览「每日数据统计」（按本地时区分日聚合 + shadcn Chart/unovis 双轴柱线图）：`backend/app/services/stats.py`、`backend/app/routers/admin.py`（`GET /api/admin/daily-stats`，别名引入 `daily_stats` 为 `build_daily_stats`）、`frontend/src/components/DailyStatsCard.vue`、`frontend/src/components/ui/chart/`（shadcn 官方图表组件）、`frontend/src/views/AdminView.vue`（概览 tab）、`backend/tests/daily_stats_test.py`。
 - 亮/暗主题（`.dark` 类切换 + CSS 变量）：`frontend/src/assets/index.css`（`:root`/`.dark` 变量块、`@font-face`、`@theme` 映射）、`frontend/src/stores/theme.js`（状态/记忆/跟随系统/切类）、`frontend/src/components/layout/ThemeToggle.vue`（切换按钮）、`frontend/index.html`（favicon、meta/og/theme-color、防闪烁内联脚本）。规范见 `doc/UI_ADAPTATION.md` 第 5.5 节。

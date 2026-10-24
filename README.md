@@ -12,14 +12,16 @@ PrintHub 是一套可自托管的在线云打印系统。用户上传 PDF、Offi
 ## 主要特性
 
 - **多格式上传** — PDF、Office（doc/docx/xls/xlsx/ppt/pptx）、图片（png/jpg/jpeg），由 LibreOffice + Poppler 统一转为 PDF。
-- **打印质量修复** — 内置 `/SMask` 软遮罩拍平、打印前 300dpi 整页光栅化、偏灰笔画压黑，解决「公式/化学式预览正常但打印后消失或发灰」。
+- **打印质量修复** — 内置 `/SMask` 软遮罩拍平、按需 300dpi 整页光栅化、偏灰笔画压黑，解决「公式/化学式预览正常但打印后消失或发灰」；纯净 PDF 免光栅化直接提交，打印更快且保留文字矢量。
 - **页数与覆盖率计价** — `standard`（按页数 + 单/双面）与 `coverage_tiered`（按黑色覆盖率分档）两种模式。
 - **促销与折扣** — 阶梯折扣（默认 10 张 95 折 / 100 张 90 折 / 200 张 80 折）+ 每日限时特价，多方案自动取最低价。
-- **在线支付** — 支付宝与微信（易支付网关），注册用户可用余额支付并在线充值；回调带签名校验、幂等处理与防重复入账。
-- **安全检测** — 按黑色覆盖率阈值自动拦截高风险文件下单，并在后台生成告警。
-- **自动双面（按份独立）** — 批量上传时可对每份文档单独选择单面或双面，不跨文档合并。
-- **真实打印** — Linux/macOS 走 CUPS 命令，Windows 走系统打印队列 + SumatraPDF；无 mock 模拟模式。
-- **完整后台** — 运营概览与告警、订单管理、未支付订单与上传缓存清理、用户与余额管理、价格/促销/阈值/上传限制设置、易支付配置与支付自测、CUPS 打印机管理与测试页。
+- **在线支付** — 支付宝与微信（易支付网关），注册用户可用余额支付、在线充值或兑换码充值；回调带签名校验、幂等处理与防重复入账。
+- **安全检测** — 按黑色覆盖率阈值自动拦截高风险文件下单，并在后台生成告警；转换后自检未嵌入字体与文档缺失字体，管理员可照单补装。
+- **合并双面打印** — 勾选后全部文档按上传顺序合并为一个双面打印流，不同文档的页面可排在同一张纸正反面（打印机支持自动双面时展示，按 `ceil(总页数/2) × 份数` 计价）。
+- **真实打印** — Linux/macOS 走 CUPS 命令，Windows 走系统打印队列 + SumatraPDF；无 mock 模拟模式。支付完成后由后台线程异步派发打印，接口即时返回。
+- **站点品牌自定义** — 后台「站点设置」可改网页标题、网站图标（上传 .ico/.png 或外链）与 ICP 备案号，保存即全站生效。
+- **亮暗主题与移动端适配** — 全站亮/暗色主题（跟随系统或手动切换），手机端底部 Tab 导航与后台「更多」抽屉。
+- **完整后台** — 运营概览与每日数据统计图表、告警、订单管理、未支付订单与上传缓存清理、用户与余额管理、兑换码发放与核销、站点设置、价格/促销/阈值/上传限制设置、易支付配置与支付自测、CUPS 打印机管理与测试页。
 - **单容器部署** — FastAPI 同时托管 API 与前端静态文件，无需独立 Nginx 容器；唯一持久化目录为 `./config`。
 
 ## 环境依赖
@@ -40,12 +42,12 @@ PrintHub 是一套可自托管的在线云打印系统。用户上传 PDF、Offi
 | ---------- | ---------------------------------------------------------------------------------------------------------------------- |
 | Python     | 3.12（后端）                                                                                                           |
 | Node.js    | 22.18+（前端）                                                                                                         |
-| pnpm       | 10.15.0                                                                                                                |
+| pnpm       | 12.11.2（与 `frontend/package.json` 的 `packageManager` 字段一致）                                                     |
 | 系统程序   | LibreOffice、Poppler（`pdftoppm` / `pdfinfo`）、`libcups2-dev`（`pycups` 编译所需）；Windows 本地跑配置测试可不装 CUPS |
 
 后端依赖（`backend/requirements.txt`）：FastAPI 0.116.1、uvicorn[standard] 0.35.0、python-multipart 0.0.20、pydantic-settings 2.10.1、PyPDF2 3.0.1、pdf2image 1.17.0、Pillow 11.3.0、httpx 0.28.1、bcrypt 5.0.0、pycups 2.0.4。
 
-前端：Vue 3、Vite、Vue Router、Pinia、lucide-vue-next。
+前端：Vue 3、Vite、Vue Router、Pinia、Tailwind CSS v4 + shadcn-vue（reka-ui）、unovis（图表）、vue-sonner（Toast）、lucide-vue-next。
 
 ## 快速安装 & 上手
 
@@ -157,6 +159,12 @@ cd backend
 # 配置生成 / 热加载 / 管理员重置测试：不依赖 CUPS，本地可跑
 python tests/config_test.py
 
+# 兑换码专项回归测试（每用户上限双重校验、有效期二选一等）：不依赖 CUPS，本地可跑
+python tests/redemption_per_user_test.py
+
+# 每日数据统计（本地时区分日聚合）专项测试：不依赖 CUPS，本地可跑
+python tests/daily_stats_test.py
+
 # 后端冒烟测试：需要 pycups/CUPS 环境，建议在容器内跑
 CONFIG_ROOT=/tmp/cloud_print_test .venv/bin/python tests/smoke_test.py
 ```
@@ -167,7 +175,7 @@ CONFIG_ROOT=/tmp/cloud_print_test .venv/bin/python tests/smoke_test.py
 
 1. 打开首页 `http://<服务器IP>:5978`，拖入一个或多个文档；
 2. 等待上传完成——后端自动转 PDF、统计页数与黑色覆盖率并做安全检测，不安全文件会被标红且不能下单；
-3. 用内置预览确认排版，按份勾选「双面」；
+3. 用内置预览确认排版，需要跨文档连打时勾选「合并双面」（打印机支持自动双面才展示）；
 4. 填写联系人姓名与 11 位手机号，选择份数；
 5. 点击计价查看金额（阶梯折扣、限时特价会自动生效）；
 6. 选择支付宝 / 微信支付，或登录后使用余额支付；
@@ -199,23 +207,24 @@ python scripts/fix_docx_formula.py --check 你的文档.docx
 python scripts/fix_docx_formula.py 你的文档.docx
 ```
 
-> 正常上传无需先跑修复脚本：系统会在转换后自动拍平 `/SMask`，并在打印前整页光栅化。
+> 正常上传无需先跑修复脚本：系统会在转换后自动拍平 `/SMask`，并在打印前对 Office 转换件与含遮罩的 PDF 整页光栅化（纯净 PDF 直接提交原文件）。
 
 ### 5. API 速查
 
 | 方法与路径                                                                   | 说明                                           |
 | ---------------------------------------------------------------------------- | ---------------------------------------------- |
 | `GET /api/health` · `GET /api/ready`                                         | 健康检查 · 数据库就绪                          |
+| `GET /api/site-settings` · `GET /api/site/favicon`                           | 公开站点配置（标题/favicon/备案号）与图标字节流 |
 | `POST /api/upload`                                                           | 上传、转换、检测并入库                         |
-| `GET /api/files/{file_id}/preview`                                           | PDF inline 预览                                |
-| `POST /api/price` · `GET /api/promotions` · `GET /api/limits`                | 计价、促销、生效上传限制                       |
+| `GET /api/files/{file_id}/preview` · `POST /api/check-safety`                | PDF inline 预览 · 安全检测结果                 |
+| `POST /api/price` · `GET /api/promotions` · `GET /api/limits` · `GET /api/print-options` | 计价、促销、生效上传限制、打印机能力 |
 | `POST /api/payment/create`                                                   | 创建打印订单                                   |
 | `GET /api/payment/submit/{order_id}`                                         | 易支付自动提交页                               |
 | `GET\|POST /api/payment/notify`                                              | 易支付异步回调                                 |
 | `GET /api/orders/{order_id}`                                                 | 查询订单并刷新打印状态                         |
 | `POST /api/auth/register` · `/login` · `/logout` · `GET /api/auth/me`        | 认证与会话                                     |
-| `POST /api/user/recharge` · `PUT /api/user/profile` · `GET /api/user/orders` | 用户中心                                       |
-| `GET /api/admin/*`                                                           | 后台（需管理员）：概览、订单、用户、设置、支付、打印机、告警 |
+| `POST /api/user/recharge` · `POST /api/user/redeem` · `PUT /api/user/profile` · `GET /api/user/orders` | 用户中心（充值 / 兑换码 / 资料 / 订单） |
+| `GET /api/admin/*`                                                           | 后台（需管理员）：概览与每日统计、订单、用户、站点设置、设置、支付、兑换码、打印机、告警 |
 
 ## 配置说明
 
@@ -233,6 +242,10 @@ python scripts/fix_docx_formula.py 你的文档.docx
 | `trusted_hosts`                                                                | 允许的 Host 列表，默认 `*`（便于局域网 IP 访问），公网建议收紧              |
 | `cors_origins`                                                                 | 允许的跨域来源                                                              |
 | `session_cookie_secure`                                                        | HTTPS 时设 `true`；HTTP 时保持 `false`，否则登录失效                        |
+| `rate_limit_requests` / `rate_limit_window_seconds`                            | 全局限流：每窗口请求数 / 窗口秒数（默认 120 次 / 60 秒）                    |
+| `sensitive_rate_limit_per_minute`                                              | 登录 / 注册 / 上传专项限速（次/分钟/IP），默认 10，0 = 关闭                 |
+| `access_token_expire_seconds` / `session_expire_seconds` / `captcha_expire_seconds` | token 与会话有效期、验证码有效期（默认均为 5 分钟 ~ 7 天，见生成文件）  |
+| `login_lock_threshold` / `login_lock_seconds`                                  | 登录失败锁定阈值与时长；建库时播种进后台「站点设置」，之后以后台保存值为准 |
 | `admin_username` / `admin_password`                                            | 初始管理员账号，默认 `admin` / `admin123456`                                |
 | `reset_admin_password`                                                         | 置 `true` 并重启即把管理员密码重置为 `admin_password`，之后自动写回 `false` |
 | `print_status_check_interval_seconds`                                          | 打印状态检查间隔，默认 30                                                   |
