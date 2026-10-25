@@ -13,10 +13,10 @@
 ## 2. 技术栈
 
 - 后端：Python 3.12、FastAPI、SQLite、Pydantic Settings、bcrypt、PyPDF2、pdf2image、Pillow；`opencv-python-headless` 为证照打印的可选依赖（缺失时自动降级为手动四点裁剪，全流程仍可用）。
-- 文档转换：系统安装 LibreOffice、Poppler、CUPS client、完整字体库（Noto CJK/CJK-extra、Noto Core/Extra/Mono、Liberation、Carlito、Caladea、DejaVu、STIX、Noto Color Emoji）和 `zh_CN.UTF-8`。字体映射与回退由 `docker/fontconfig/49-cloud-print-aliases.conf` 提供，把 Windows/Office 专有字体名（宋体/黑体/微软雅黑/Times New Roman/Arial/Wingdings 等）映射到已装字体，并为所有字体追加 CJK + 数学符号 + 图案符号兜底，避免转换/打印乱码。
+- 文档转换：系统安装 LibreOffice（按需组件 `libreoffice-core/writer/calc/impress/math`，**不装 `libreoffice` 元包**——元包会连带 `libreoffice-base`/`draw` 等本系统用不到的组件；math 用于渲染 docx 内嵌公式，必须保留）、Poppler、CUPS client、字体库（Noto CJK / CJK-extra（中文含粗体全部字重）、Noto Core/Mono（数学符号 ∑∫√≠≤≥∈∂∇、上下标、Symbols/Symbols2 图案兜底、拉丁 Regular/Bold/Italic）、Liberation、Carlito、Caladea、DejaVu、STIX、Noto Color Emoji；`fonts-noto-extra`/`fonts-dejavu-extra` 只提供多余字重，已移除，fontconfig 回退链引用的字体全部在保留包内）和 `zh_CN.UTF-8`。pycups 无预编译 wheel：构建时装 `build-essential`/`libcups2-dev` 编译、装完立即在同一层 `apt-get purge --auto-remove`（Dockerfile 里 apt 安装、pip 安装与编译链清理合并为一个 RUN，分层清理无法回收前层体积）。字体映射与回退由 `docker/fontconfig/49-cloud-print-aliases.conf` 提供，把 Windows/Office 专有字体名（宋体/黑体/微软雅黑/Times New Roman/Arial/Wingdings 等）映射到已装字体，并为所有字体追加 CJK + 数学符号 + 图案符号兜底，避免转换/打印乱码。运行环境设置 `MALLOC_ARENA_MAX=2` 限制 glibc 内存池膨胀。
 - 打印：CUPS 命令、Windows PowerShell/SumatraPDF 分流（已移除 mock 模拟模式）。
 - 前端：Vue 3、Vite、Vue Router、Pinia、**Tailwind CSS v4 + shadcn-vue（reka-ui，reka-nova 风格，`typescript: false` 生成 JS 组件）**、lucide-vue-next、unovis（shadcn-vue Chart 底层）、vue-sonner（Toast）。组件一律来自 `frontend/src/components/ui/*`（shadcn-vue CLI 生成，`components.json` 驱动），页面层只用 Tailwind 工具类 + CSS 变量定制外观，禁止手写 CSS 复刻组件。品牌字/数字用自托管 Space Grotesk 变量字体（仅拉丁字符与数字，中文自动回退系统字体），文件在 `frontend/src/assets/fonts/`，由 `assets/index.css` 的 `@font-face` 与 `--font-display` 暴露。
-- 部署：Docker Compose 单容器。`Dockerfile` 多阶段构建（Node 构建前端 → Python 运行镜像，FastAPI 同时托管 API 与前端静态文件），pnpm 版本由 `frontend/package.json` 的 `packageManager` 字段固定（当前 `pnpm@12.11.2`，Dockerfile 安装同版本），`frontend/pnpm-workspace.yaml` 里 `minimumReleaseAge: 0` 关闭 pnpm 供应链发布龄期检查以保证锁文件可冻结安装——**该文件必须与 `package.json`/`pnpm-lock.yaml` 一起在 `pnpm install` 前拷入构建层**（见 Dockerfile Stage 1 注释；只拷 package.json 会让 install 落回默认 1 天龄期策略并拒绝刚发布的包）。`frontend/package.json` 里 `shadcn-vue` 是 devDependency（`assets/index.css` 的 `@import "shadcn-vue/tailwind.css"` 依赖它提供 data-* 变体等基础样式层，不要移除）。`docker-compose.yml` 用 `./config:/app/config` 绑定挂载持久化，`docker/entrypoint.sh` 负责建目录与生成配置文件。仓库里没有 `install.sh`/`configure.sh`/`start.sh`/`uninstall.sh`。
+- 部署：Docker Compose 单容器。`Dockerfile` 多阶段构建（Node 构建前端 → 独立阶段编译 pycups wheel → Python 运行镜像，FastAPI 同时托管 API 与前端静态文件；运行时镜像不含 gcc/build-essential 等编译工具链），pnpm 版本由 `frontend/package.json` 的 `packageManager` 字段固定（当前 `pnpm@12.11.2`，Dockerfile 安装同版本），`frontend/pnpm-workspace.yaml` 里 `minimumReleaseAge: 0` 关闭 pnpm 供应链发布龄期检查以保证锁文件可冻结安装——**该文件必须与 `package.json`/`pnpm-lock.yaml` 一起在 `pnpm install` 前拷入构建层**（见 Dockerfile Stage 1 注释；只拷 package.json 会让 install 落回默认 1 天龄期策略并拒绝刚发布的包）。`frontend/package.json` 里 `shadcn-vue` 是 devDependency（`assets/index.css` 的 `@import "shadcn-vue/tailwind.css"` 依赖它提供 data-* 变体等基础样式层，不要移除）。`docker-compose.yml` 用 `./config:/app/config` 绑定挂载持久化，`docker/entrypoint.sh` 负责建目录与生成配置文件。仓库里没有 `install.sh`/`configure.sh`/`start.sh`/`uninstall.sh`。
 - 存储：唯一持久化目录是配置目录 `<CONFIG_ROOT>`（容器内 `/app/config`，由 `docker-compose.yml` 绑定挂载到宿主机 `./config`）：`config.json`、`cloud_print.db`、`uploads/`、`backups/`、`logs/`、`cups-drivers/` 全在里面，备份 = 复制整个配置目录。
 - 配置优先级：环境变量 > `config.json` > 代码内建默认值。`config.json` 首次启动自动生成（含随机 `app_secret`），之后只在缺失键时补齐、绝不覆盖已有值。
 
@@ -76,7 +76,7 @@
 │   └── nginx.conf               # 旧的独立 Nginx 配置，仅备用（生产由 FastAPI 托管前端）
 ├── scripts/test_printer.py      # 命令行测试样张脚本
 ├── scripts/theme_*.py           # 旧版手写 CSS 时代的主题检查工具，针对 var(--cp-*) 编写，已废弃不参与运行
-├── Dockerfile                   # 多阶段构建：Node 构建前端 → Python 运行镜像（FastAPI 同时托管前端）
+├── Dockerfile                   # 多阶段构建：Node 构建前端 → pycups wheel 编译 → Python 运行镜像（FastAPI 同时托管前端；运行时不含编译工具链）
 ├── docker-compose.yml           # 单容器；./config:/app/config 绑定挂载持久化
 ├── docker/                      # entrypoint.sh、fontconfig 字体映射、nginx 配置（备用）
 ├── README.md
