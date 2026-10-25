@@ -1,7 +1,7 @@
 # 证照模板打印模块（形态 A · 模块化页面版）完整实施方案
 
-> 版本：v3（合并「自包含目录架构」与「模块化页面设计」，为当前最新方案）。
-> 状态：方案文档，**未实现任何代码**。实现时以本文为需求依据；实现完成后按仓库惯例将功能说明回写 `doc/PRD.md` 与 `doc/AGENTS.md`。
+> 版本：v5（v4 基础上按用户要求调整：户口本两槽位改为**上下排布**，与身份证正反面版式一致；v4 的「左右并排」废弃。v4 要点：户主页 + 个人页两个槽位排入同一页 A4，原「个人页/户主页各一个独立模块页」的设计废弃，见 4.3）。
+> 状态：已按本方案实现（P0）。实现说明回写 `doc/PRD.md` 与 `doc/AGENTS.md`；本文保留为方案依据。
 > 适用范围：在现有 PrintHub 云打印系统（FastAPI + Vue 3 单容器架构）内新增独立的「证照打印」模块。
 
 ## 0. 方案要点（TL;DR）
@@ -10,7 +10,7 @@
 - **架构形态**：现有系统内的独立模块（形态 A）。登录态、余额、订单、打印管线全部复用，无跨系统 SSO。
 - **硬性约束**：新增文件 100% 集中在 `backend/app/cert/` 与 `frontend/src/cert/` 两个目录；主程序文件只允许出现预算表内的「必要钩子」（合计约 10–20 行）；可整体回滚。
 - **模块化原则**：一个打印功能 = 一个独立页面模块文件（身份证正反面打印一个模块、户口本打印一个模块），模块间零引用，共享能力下沉到公共骨架与基础组件；门户页完全由模板数据驱动。
-- **首发范围**：3 个模块页（身份证正反面 / 户口本个人页 / 户口本户主页）+ 门户页 + 余额一键打印 + 隐私即删。
+- **首发范围**：2 个模块页（身份证正反面 / 户口本·户主页+个人页同页）+ 门户页 + 余额一键打印 + 隐私即删。
 - **隐私红线**：证件原始照片不落盘持久化；生成件默认保留 24 小时自动清理；页面知情确认声明。
 
 ## 1. 隔离架构总则（硬性约束）
@@ -49,14 +49,13 @@ frontend/src/cert/
 ├── modules/
 │   ├── ModuleShell.vue       # 模块页公共骨架（编排：槽位→预览→下单）
 │   ├── IdCardModule.vue      # 身份证正反面打印（独立模块页）
-│   ├── HukouPersonalModule.vue  # 户口本个人页打印（独立模块页）
-│   └── HukouHolderModule.vue    # 户口本户主页打印（独立模块页）
+│   └── HukouModule.vue       # 户口本打印（独立模块页：户主页 + 个人页同页 A4）
 ├── components/
 │   ├── PortalCard.vue        # 门户功能卡（图标/名称/说明/主题色）
 │   ├── SlotUploader.vue      # 槽位拍照/上传/回显/重拍
 │   ├── CropOverlay.vue       # 四点手动裁剪弹层（SVG，无第三方库）
 │   └── CertOrderPanel.vue    # 参数/价格/余额/知情确认/确认打印
-└── CertAdminView.vue         # /cert-admin 管理页（独立小页，不进 AdminView 内部）
+└── CertAdminPanel.vue        # AdminView「证件照管理」tab 面板（原 /cert-admin 独立页已并入并移除）
 ```
 
 ### 1.3 触碰面预算表（主程序全部改动，超出的都算污染）
@@ -75,10 +74,10 @@ frontend/src/cert/
 
 | 文件 | 改动内容 | 规模 |
 | --- | --- | --- |
-| `frontend/src/router/index.js` | 引入 cert 模块路由清单（`/cert` 门户 + 3 个模块页 + `/cert-admin` 管理页守卫） | 约 6 行 |
-| `frontend/src/components/layout/AppHeader.vue` | 桌面导航 +「证照打印」一项（指向 `/cert`） | 约 2 行 |
+| `frontend/src/router/index.js` | 引入 cert 模块路由清单（`/cert` 门户 + 模块页；证件照管理在 AdminView tab 内） | 约 6 行 |
+| `frontend/src/components/layout/AppHeader.vue` | 桌面导航 +「模板打印」一项（指向 `/cert`） | 约 2 行 |
 | `frontend/src/components/layout/MobileTabbar.vue` | 三格扩四格 + 证照项（active 用 `route.path` 内联判断，**不改 useNavTargets.js**） | 约 4 行 |
-| `frontend/src/views/AdminView.vue` | 侧边栏 +「证照模板」菜单项（跳 `/cert-admin`） | 约 2 行 |
+| `frontend/src/views/AdminView.vue` | 「证件照管理」tab（配置下方，import + 内嵌 `cert/CertAdminPanel.vue`） | 约 5 行 |
 | `frontend/src/views/HomeView.vue` | （可选）推广卡片 | 约 10 行，可省 |
 
 **明确零改动清单**：`api/client.js`、`stores/*`、`assets/index.css`、`index.html`、`components/ui/*`、`composables/useNavTargets.js`、`models/schemas.py`、`config.py`、Dockerfile、docker-compose.yml，以及后端上传/支付/打印/兑换码/站点设置全部 router 与 service、`files` 表结构。
@@ -109,8 +108,7 @@ frontend/src/cert/
 /cert 证照门户（宫格卡片：宣传位[可选] + 两列功能卡）
    ├─ 图文打印        → 跳转现有首页 /（既有主打印功能，静态卡）
    ├─ 身份证正反面打印 → /cert/id-card（独立模块页）
-   ├─ 户口本个人页打印 → /cert/hukou-personal（独立模块页）
-   ├─ 户口本户主页打印 → /cert/hukou-holder（独立模块页）
+   ├─ 户口本打印       → /cert/hukou（独立模块页：户主页 + 个人页同页 A4）
    └─ （后续新模块自动出现：证书打印、驾驶证打印…，由后台启停控制）
 ```
 
@@ -128,8 +126,7 @@ frontend/src/cert/
 | --- | --- | --- | --- | --- |
 | `/cert` | `CertPortal.vue`（门户，不对应模板） | — | — | — |
 | `/cert/id-card` | `modules/IdCardModule.vue` | `id_card` | 人像面、国徽面 | 身份证正反面打印 |
-| `/cert/hukou-personal` | `modules/HukouPersonalModule.vue` | `hukou_personal` | 个人页照 | 户口本个人页打印 |
-| `/cert/hukou-holder` | `modules/HukouHolderModule.vue` | `hukou_holder` | 户主页照 | 户口本户主页打印 |
+| `/cert/hukou` | `modules/HukouModule.vue` | `hukou` | 户主页、个人页 | 户口本打印 |
 | `/` | （现有 HomeView，静态卡跳转） | — | — | 图文打印 |
 
 路由注册：cert 目录内维护「模块路由清单」（`routes.js`），`router/index.js` 钩子一次性引入。**新增一个证照功能的成本公式：1 个模块页文件 + 1 行本地路由注册 + 1 条模板数据（后台启用即自动出现在门户），主程序零改动。**
@@ -178,19 +175,17 @@ frontend/src/cert/
 - 槽位：人像面照片、国徽面照片（2 个，均必传）。
 - 版式：1 页 A4 竖版，正上反下，各 85.6×54mm 1:1，水平居中 x=62.2mm，正面 y=89.5mm、反面 y=153.5mm（垂直居中，间距 10mm），浅灰裁剪细框默认开。
 - 专属文案：本页说明「正反面自动排入同一页，打印后沿框裁剪即为实际尺寸」；拍摄建议强调「证件平放、四角完整、避免手指遮挡」。
-- 计价：模板独立价（¥X/套 × 份数），未设价时回退标准按页价。
+- 计价：模板独立价（¥X/页 × 页数 × 份数；证照件 1 页/版），未设价时回退标准按页价。
 
-### 4.3 户口本个人页打印模块（`/cert/hukou-personal`）
+### 4.3 户口本打印模块（`/cert/hukou`）
 
-- 槽位：个人页照片（1 个必传）。
-- 版式：1 页 A4，矫正后近整页摆放（**尺寸须实物样张实测校准后才上线**）。
+> v5 调整（2026-10-24，用户确认）：两槽位**上下排布**（户主页在上、个人页在下，水平居中同列），与身份证正反面版式一致；v4 的「左右并排摊开式」废弃。v3 原设计的「个人页/户主页各一个独立模块页」同样已废弃，两个旧模板 code（hukou_personal/hukou_holder）由 `ensure_schema()` 随新版本自动清理。
+
+- 槽位：户主页照片、个人页照片（2 个，均必传）；自动识别裁切与身份证共用同一管线（目标长宽比 = 槽位包围框比例，作为识别置信度过滤条件）。
+- 版式：1 页 A4 竖版上下排布——户主页 y=13.5、个人页 y=153.5，水平居中同列 x=57.5，各 95×130mm contain 包围框（比例≈105:145 实页），两框间距 10mm（与身份证一致），矫正后按原比例缩放居中；浅灰裁剪框默认开（**包围框尺寸须实物样张实测校准后才上线**）。
 - 专属文案：拍摄建议强调「页面平整、避免装订阴影、字迹清晰」。
 
-### 4.4 户口本户主页打印模块（`/cert/hukou-holder`）
-
-- 与 4.3 同构，槽位为户主页照片，模板 code `hukou_holder`。两个户口本模块是两个独立页面文件（满足「一个功能一个模块」），共享同一套 A4 整页版式配置。
-
-### 4.5 模块页的联动打印（所有模块一致）
+### 4.4 模块页的联动打印（所有模块一致）
 
 - 价格试算走现有 `POST /api/price`（file_ids 模式），证照计价在后端计价服务内部生效，前端无感知。
 - 「确认打印」走现有 `POST /api/payment/create`（balance）——服务端校验最低余额 → 扣款 → 订单置 `paid` → `dispatch_order_print()`；**模块内不出现任何支付代码**。
@@ -310,7 +305,7 @@ frontend/src/cert/
 
 ### 7.3 `GET /api/cert/templates` 响应要点
 
-返回 `[{code, name, slots:[{key,label,size_mm}], page_count, cut_guides, price, price_mode, card:{icon,desc,theme}}]`；只含 `enabled=1` 的模板；`price_mode` 为 `template`（独立价，前端显示「¥X/套」）或 `standard`（按页计价）。
+返回 `[{code, name, slots:[{key,label,size_mm}], page_count, cut_guides, price, price_mode, card:{icon,desc,theme}}]`；只含 `enabled=1` 的模板；`price_mode` 为 `template`（独立价，前端统一显示「¥X/页」）或 `standard`（按页计价）。
 
 ### 7.4 归属校验
 
@@ -373,11 +368,11 @@ frontend/src/cert/
 7. **传输与回跳**：生产环境 HTTPS（现有部署约定）；登录回跳 `redirect` 参数只允许站内路径（以 `/` 开头且非 `//`），防开放重定向。
 8. 后台订单详情沿用「默认不加载 PDF 预览、点预览才加载」的现有交互。
 
-## 11. 管理后台（`/cert-admin`，独立页）
+## 11. 管理后台（AdminView「证件照管理」tab）
 
-- `frontend/src/cert/CertAdminView.vue` + `cert/admin_router.py` 提供独立管理小页，**路径刻意避开 `/admin` 前缀**（防 App.vue 的 `isAdminRoute` 即 `startsWith('/admin')` 误判导致顶栏/底部导航异常）；页面在前台壳内渲染，靠路由守卫限制管理员；AdminView 仅加一个菜单项；P1 可再评估并入 AdminView tab。
-- 功能：模板列表（名称/卡片说明/价格/状态/排序）、启用停用、改单价（留空=按标准页价）；「系统设置」区：生成件保留时长、每用户每日生成上限。卡片文案（desc）P0 只读、P1 可编辑。
-- 模板启停即时生效：门户卡片消失、对应模块页生成接口 400、模块页头部显示「该功能已下架」。
+- `frontend/src/cert/CertAdminPanel.vue` + `cert/admin_router.py` 提供管理面板，**已并入 AdminView 成为「证件照管理」tab（位于「配置」下方，与其他后台 tab 同一交互：侧边栏切换、不再跳独立窗口）**；原 `/cert-admin` 独立小页与路由已移除；权限随 `/admin` 路由守卫（管理员）。
+- 功能：全部模板列表（名称/卡片说明/价格/状态，含 doc2up 两页合一登记行）——**所有模板设置项完全统一**：启用停用 + 独立单价（留空=按标准页价；全部统一「元/页」计——证照件 1 页/版、doc2up 按版面数）+「系统设置」区（生成件保留时长、每用户每日生成上限）。卡片文案（desc）P0 只读、P1 可编辑。
+- 模板启停即时生效：门户卡片消失、对应模块页生成接口 400、模块页头部显示「该功能已下架」（doc2up 同样生效：合成接口 400、模块页显示已下架）。
 
 ## 12. 边界情况与异常处理
 
@@ -421,7 +416,7 @@ frontend/src/cert/
 1. 身份证模块：上传正反面照片 → 自动生成 1 页 A4 PDF，预览中卡片为 85.6×54mm（1:1）、正上反下；自动识别失败时可用手动四点裁剪成功生成。
 2. 未登录点「确认打印」→ 跳登录页 → 登录后回跳当前模块页；余额不足 → 提示并可去充值；余额足够 → 点击后直接扣费并派发打印，无任何额外操作。
 3. 生成成功后服务端不存在原始照片文件；到期后生成件与文件记录被自动清理；用户可手动删除。
-4. `/cert-admin` 可启停模板、改单价、调保留期与上限，即时生效。
+4. 后台「证件照管理」tab 可启停模板（含两页合一）、改单价、调保留期与上限，即时生效。
 5. 手机端 320px 无横向滚动、亮暗主题正常、彩色选项严格跟随打印机能力。
 6. 未勾选知情确认时「确认打印」不可用；不装 OpenCV 时全流程可用。
 
@@ -435,7 +430,7 @@ frontend/src/cert/
 6. 前端公共层：`api.js` / `constants.js` / `SlotUploader` / `CropOverlay` / `CertOrderPanel` / `ModuleShell`（1.5–2d）
 7. 门户页 `CertPortal.vue` + `PortalCard.vue` + `routes.js` + 路由/导航钩子 + 首页推广卡（可选）（0.5–1d）
 8. 三个模块页（声明式，平均每页 0.25d）（0.75d）
-9. `CertAdminView.vue` + `cert/admin_router.py` + AdminView 菜单项（0.5d）
+9. `CertAdminPanel.vue` + `cert/admin_router.py` + AdminView「证件照管理」tab（0.5d）
 10. `cert/cleanup.py` + `main.py` 启动钩子（0.5d）
 11. 测试（单测 + 冒烟扩展）+ 隔离性自检 + 模块化演练（新增一个模板走通全流程）+ 四组合 UI 自检（1d）
 

@@ -422,6 +422,10 @@
               </Button>
             </template>
 
+            <!-- ============ 证件照管理 ============ -->
+            <!-- 【证照打印】隔离钩子（预算表内）：cert 模块管理面板组件化嵌入（面板数据自加载） -->
+            <CertAdminPanel v-if="tab === 'cert'" />
+
             <!-- ============ 站点设置 ============ -->
             <template v-if="tab === 'site'">
               <div class="grid gap-1">
@@ -1408,8 +1412,9 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { toast } from 'vue-sonner'
-import { Archive, CheckCircle, ClipboardList, CreditCard, DatabaseBackup, Download, ExternalLink, Eye, Gauge, Globe, House, Image as ImageIcon, MapPin, MoreHorizontal, Pencil, Plus, Power, Printer, RefreshCw, RotateCcw, Save, Search, Server, Settings, Target, Ticket, Trash2, TriangleAlert, UploadCloud, UserCog, X, XCircle, CircleCheck } from 'lucide-vue-next'
+import { Archive, CheckCircle, ClipboardList, CreditCard, DatabaseBackup, Download, ExternalLink, Eye, Gauge, Globe, House, IdCard, Image as ImageIcon, MapPin, MoreHorizontal, Pencil, Plus, Power, Printer, RefreshCw, RotateCcw, Save, Search, Server, Settings, Target, Ticket, Trash2, TriangleAlert, UploadCloud, UserCog, X, XCircle, CircleCheck } from 'lucide-vue-next'
 import { buildApiUrl, request } from '@/api/client'
+import CertAdminPanel from '@/cert/CertAdminPanel.vue'
 import DailyStatsCard from '@/components/DailyStatsCard.vue'
 import IcpFooter from '@/components/layout/IcpFooter.vue'
 import ThemeToggle from '@/components/layout/ThemeToggle.vue'
@@ -1485,6 +1490,7 @@ const tabs = [
   { key: 'orders', label: '订单', icon: ClipboardList },
   { key: 'users', label: '用户', icon: UserCog },
   { key: 'settings', label: '配置', icon: Settings },
+  { key: 'cert', label: '证件照管理', icon: IdCard },
   { key: 'site', label: '站点设置', icon: Globe },
   { key: 'payment', label: '支付', icon: CreditCard },
   { key: 'redemptions', label: '兑换码', icon: Ticket },
@@ -1493,7 +1499,7 @@ const tabs = [
 ]
 const tab = ref('dashboard')
 const currentTabLabel = computed(() => tabs.find((item) => item.key === tab.value)?.label || '后台')
-// 手机端底部 Tab 栏：后台共 9 个 tab，窄屏底部放不下，因此常用 tab 常驻、其余收进「更多」面板。
+// 手机端底部 Tab 栏：后台共 10 个 tab，窄屏底部放不下，因此常用 tab 常驻、其余收进「更多」面板。
 // 桌面端不受影响，仍由侧边栏展示全部 tab；两端共用同一个 tab 状态与 loadTab()，
 // 所以切换行为与点击侧边栏按钮完全一致（只改 tab ref，不涉及路由跳转）。
 const MOBILE_PRIMARY_TAB_KEYS = ['dashboard', 'orders', 'users', 'settings']

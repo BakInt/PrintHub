@@ -19,7 +19,7 @@ from ..services.queue import queue_overview
 from ..services.redemption import batch_generate_codes, create_code, delete_code, list_code_logs, list_codes
 from ..services.site_settings import admin_site_settings, save_site_settings, save_uploaded_favicon
 # 必须用别名引入：下面的路由函数同名会覆盖模块级名字，导致路由调用自己。
-from ..services.stats import daily_stats as build_daily_stats
+from ..services.stats import PAID_STATUSES, daily_stats as build_daily_stats
 from ..utils.security import hash_password
 from .deps import admin_user
 
@@ -54,15 +54,19 @@ def _serialize_payment_test(db: sqlite3.Connection, order_id: str) -> dict:
 
 @router.get("/dashboard")
 def dashboard(db: sqlite3.Connection = Depends(get_db), _admin=Depends(admin_user)):
+    """概览卡片。`revenue` 只计已支付订单（status ∈ PAID_STATUSES，与每日数据统计同口径）；
+    `orders_count` 仍统计全部订单（含待支付），待支付规模由 `pending_orders` 单独展示。"""
+    paid_placeholders = ",".join("?" for _ in PAID_STATUSES)
     totals = db.execute(
-        """
+        f"""
         SELECT
             COUNT(*) AS orders_count,
-            COALESCE(SUM(total_amount), 0) AS revenue,
+            COALESCE(SUM(CASE WHEN status IN ({paid_placeholders}) THEN total_amount ELSE 0 END), 0) AS revenue,
             SUM(CASE WHEN status = 'print_failed' THEN 1 ELSE 0 END) AS failed_prints,
             SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending_orders
         FROM orders
-        """
+        """,
+        PAID_STATUSES,
     ).fetchone()
     overview = queue_overview(db)
     result = dict(totals)

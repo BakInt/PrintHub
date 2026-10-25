@@ -387,7 +387,11 @@ def calculate_files_price_detail(
     )
     detail["merge_duplex"] = bool(merge_duplex)
     detail["total_pages"] = total_pages
-    return detail
+    # 【证照打印】隔离钩子（预算表内）：证照生成件按模板单价/标准单面价重算，
+    # 任何情况下不落入覆盖率计价；无证照件时零开销原样返回。函数内导入避免模块加载环。
+    from ..cert.pricing import apply_cert_pricing
+
+    return apply_cert_pricing(db, files, copy_count, detail)
 
 
 def calculate_files_price(db: sqlite3.Connection, files: list[sqlite3.Row], copies: int, merge_duplex: bool = False) -> float:

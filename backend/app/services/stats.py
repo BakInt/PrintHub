@@ -19,6 +19,10 @@ from typing import Any
 
 # `orders.status` 里表示「打印失败」的取值，与后台概览卡片口径一致。
 FAILED_STATUS = "print_failed"
+# 「已支付」状态集合：订单只有走过支付成功（余额扣费或易支付回调）才会从 pending
+# 进入这些状态，且不存在退款/取消回退。收入统计（概览卡片与每日数据统计）只对
+# 这些状态求和，未支付（pending）订单不计入销售额。
+PAID_STATUSES = ("paid", "printing", "completed", "print_failed")
 # 后台时间范围切换按钮提供「近 7 天 / 近 30 天」，这里给出通用默认值与上下限。
 DEFAULT_DAYS = 7
 MIN_DAYS = 1
@@ -73,31 +77,33 @@ def _day_sequence(days: int) -> list[date]:
 def daily_stats(db: sqlite3.Connection, days: int = DEFAULT_DAYS) -> dict:
     """按本地时区聚合每日订单数、收入与打印失败数。
 
-    口径与后台概览卡片（`GET /api/admin/dashboard`）保持一致：统计 `orders` 表全部订单，
-    不按 `order_type` 过滤，`revenue` 为 `total_amount` 之和。这样「每日数据统计」里的
-    合计与卡片上的数字对得上，不会出现两处口径不一致的困惑。
+    口径与后台概览卡片（`GET /api/admin/dashboard`）保持一致：统计 `orders` 表全部订单、
+    不按 `order_type` 过滤；**`revenue` 只计已支付订单**（`status` ∈ `PAID_STATUSES`），
+    未支付（pending）订单计入 `orders` 但不计入销售额，避免「待支付一多销售额虚高」。
+    这样「每日数据统计」里的合计与卡片上的数字对得上，不会出现两处口径不一致的困惑。
     """
     days = normalize_days(days)
     sequence = _day_sequence(days)
     # 查询窗口 = 本地「第一天 00:00」到「最后一天次日 00:00」对应的 UTC 半开区间。
     start_utc = _utc_boundary_text(datetime.combine(sequence[0], time.min))
     end_utc = _utc_boundary_text(datetime.combine(sequence[-1] + timedelta(days=1), time.min))
+    paid_placeholders = ",".join("?" for _ in PAID_STATUSES)
 
     # 只按 UTC 小时聚合（最多 days * 24 行），再在 Python 侧折算成本地日期，
     # 这样既不用为每一天各发一条查询，也能正确处理本地时区与夏令时。
     buckets = db.execute(
-        """
+        f"""
         SELECT
             strftime('%Y-%m-%d %H', datetime(created_at)) AS bucket,
             COUNT(*) AS orders_count,
-            COALESCE(SUM(total_amount), 0) AS revenue,
+            COALESCE(SUM(CASE WHEN status IN ({paid_placeholders}) THEN total_amount ELSE 0 END), 0) AS revenue,
             SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) AS failed_count
         FROM orders
         WHERE datetime(created_at) >= datetime(?)
           AND datetime(created_at) < datetime(?)
         GROUP BY bucket
         """,
-        (FAILED_STATUS, start_utc, end_utc),
+        (*PAID_STATUSES, FAILED_STATUS, start_utc, end_utc),
     ).fetchall()
 
     per_day: dict[date, dict[str, float]] = {}

@@ -348,6 +348,11 @@ def init_db() -> None:
     with connect() as connection:
         connection.executescript(SCHEMA)
         ensure_columns(connection)
+        # 【证照打印】隔离钩子（预算表内）：cert 模块自持建表与播种（cert_templates /
+        # cert_docs + cert 设置键），幂等；函数内导入避免模块加载环。
+        from .cert import ensure_schema
+
+        ensure_schema(connection)
         # 补列之后再换算旧数据：老库里 per_user_once=1 的兑换码要变成「每用户最多 1 次」。
         migrate_redemption_per_user_limit(connection)
         defaults = {

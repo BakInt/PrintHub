@@ -1,19 +1,24 @@
 <script setup>
 import { computed } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
-import { ClipboardList, Home, User } from 'lucide-vue-next'
+import { ClipboardList, CreditCard, Home, User } from 'lucide-vue-next'
 import { useNavTargets } from '@/composables/useNavTargets'
 import { useAuthStore } from '@/stores/auth'
 
-// 手机端（< md 断点）底部 Tab 导航栏：首页 / 订单 / 我的。
+// 手机端（< md 断点）底部 Tab 导航栏：首页 / 证照 / 订单 / 我的。
 // 图标 + 文字 + 选中高亮，底部适配 iOS 安全区；桌面端隐藏。
 // 后台（/admin）的底部栏由 AdminView 自己的 AdminTabbar 承担，前台壳不渲染。
 const auth = useAuthStore()
 const route = useRoute()
 const { ordersTarget, mineTarget, isHome, isOrders, isMine } = useNavTargets()
 
+// 【证照打印】隔离钩子（预算表内）：三格扩四格 + 证照项；
+// active 用 route.path 内联判断（/cert 与 /cert/* 高亮），不改 useNavTargets.js。
+const isCert = computed(() => route.path === '/cert' || route.path.startsWith('/cert/'))
+
 const items = computed(() => [
   { key: 'home', label: '首页', icon: Home, to: '/', active: isHome.value },
+  { key: 'cert', label: '证照', icon: CreditCard, to: '/cert', active: isCert.value },
   { key: 'orders', label: '订单', icon: ClipboardList, to: auth.user ? ordersTarget.value : '/login', active: isOrders.value },
   { key: 'mine', label: '我的', icon: User, to: auth.user ? mineTarget.value : '/login', active: isMine.value }
 ])
@@ -22,7 +27,7 @@ const items = computed(() => [
 <template>
   <nav
     v-if="!route.path.startsWith('/admin')"
-    class="fixed inset-x-0 bottom-0 z-40 grid grid-cols-3 border-t border-border bg-background/92 pb-[env(safe-area-inset-bottom)] backdrop-blur-md md:hidden"
+    class="fixed inset-x-0 bottom-0 z-40 grid grid-cols-4 border-t border-border bg-background/92 pb-[env(safe-area-inset-bottom)] backdrop-blur-md md:hidden"
     aria-label="主导航"
     style="box-shadow: 0 -6px 24px rgb(13 27 62 / 0.08)"
   >

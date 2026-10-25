@@ -190,6 +190,34 @@
     @apply border-border outline-ring/50;
   }
 
+  /* 指针光标反馈：Tailwind v4 preflight 不再像 v3 那样给 button/[role=button]
+     设置 cursor: pointer，浏览器默认箭头会让所有按钮/Tab/控件看起来不可点。
+     这里统一恢复；用 :where() 把选择器优先级归零，组件里的
+     cursor-not-allowed / cursor-crosshair 等工具类（utilities 层）仍然生效。 */
+  :where(
+    button:not(:disabled),
+    [role='button']:not([aria-disabled='true']),
+    [role='tab']:not([aria-disabled='true']),
+    [role='switch']:not([aria-disabled='true']),
+    [role='checkbox']:not([aria-disabled='true']),
+    [role='radio']:not([aria-disabled='true']),
+    [role='menuitem']:not([aria-disabled='true']),
+    [role='option']:not([aria-disabled='true']),
+    [role='combobox']:not([aria-disabled='true']),
+    a[href],
+    label,
+    summary,
+    select:not(:disabled),
+    input[type='button']:not(:disabled),
+    input[type='submit']:not(:disabled),
+    input[type='reset']:not(:disabled),
+    input[type='checkbox']:not(:disabled),
+    input[type='radio']:not(:disabled),
+    input[type='file']:not(:disabled)
+  ) {
+    cursor: pointer;
+  }
+
   html {
     scroll-behavior: smooth;
     scroll-padding-top: 84px;

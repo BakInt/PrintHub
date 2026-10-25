@@ -19,11 +19,12 @@ class RateLimitMiddleware:
     settings.sensitive_rate_limit_per_minute 配置，0 = 关闭），防止爆破登录与匿名灌文件。
     """
 
-    # 专项限速的路径前缀（精确匹配或以其开头）
+    # 专项限速的路径前缀（精确匹配或以其开头）；/api/cert/generate 为证照打印隔离钩子（预算表内）。
     SENSITIVE_PATH_PREFIXES: tuple[str, ...] = (
         "/api/auth/login",
         "/api/auth/register",
         "/api/upload",
+        "/api/cert/generate",
     )
 
     def __init__(self, app, settings: Settings):

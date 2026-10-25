@@ -43,7 +43,7 @@
 - 触控目标：手机端主要按钮 `h-10`/`h-11`，底部 Tab 项 `min-h-14`，Tabs 分段控件 `h-10`（桌面可用默认 h-8/h-9）。手机端正文不小于 12px。
 - 输入框字号与高度：表单输入框文字用 `text-base md:text-base`（16px，覆盖 reka-nova Input 默认的 `md:text-sm`，防止 iOS 聚焦自动放大页面）；登录/注册等独立表单页输入框 `h-11`，普通视图内 `h-10`。
 - 独立表单页（登录/注册）布局：`flex min-h-[calc(100svh-…)] items-center justify-center` 让卡片在视口内水平垂直居中，卡片 `max-w-sm md:max-w-md`、内边距 `py-8 sm:px-8`，标题 `text-2xl sm:text-3xl`，行距 `gap-4 sm:gap-5`；验证码图片固定 `h-11 w-[132px] object-cover`、点击整块刷新。
-- 新功能 UI 自检清单：颜色全走 CSS 变量、hover/active/focus-visible/disabled 完整、触控目标 ≥ 40px、320px 不溢出、亮暗两套都检查过、不新增底部版权条。
+- 新功能 UI 自检清单：颜色全走 CSS 变量、hover/active/focus-visible/disabled 完整、可点击控件有指针光标（index.css base 层全局规则提供，见第 6 节）、触控目标 ≥ 40px、320px 不溢出、亮暗两套都检查过、不新增底部版权条。
 
 ---
 
@@ -133,6 +133,7 @@
 
 ## 6. 常见坑
 
+- **指针光标由全局规则提供**：Tailwind v4 的 preflight 不再像 v3 那样给 `button`/`[role="button"]` 设置 `cursor: pointer`，全站指针光标由 `index.css` base 层的 `:where(...)` 规则统一恢复（覆盖 button、tab/switch/checkbox 等常见 ARIA role、`a[href]`、`label`、`summary`、原生 select/上传/勾选等输入，`:not(:disabled)` 排除禁用态）。规则优先级已用 `:where()` 归零，`cursor-not-allowed`/`cursor-crosshair` 等工具类仍可覆盖；shadcn-vue 生成的 Dropdown/Select 选项与滚动按钮组件里的 `cursor-default` 已改为 `cursor-pointer`，更新组件时勿改回。若新组件用 `button`/`a[href]` 之外的裸元素承载点击，需自带 `cursor-pointer`。
 - **不要覆盖 Button hover**：reka-nova 的 variant 自带 hover/active 态；需要调整就叠加 Tailwind 类，不要重写 variant。
 - **TabsList 高度**：reka-nova 横向 TabsList 默认 `h-8`，统一加 `h-9!`（important 前缀）覆盖为 36px 规格并配 `text-sm`；触控要求高的独立分段控件可再加高到 `h-10!`。
 - **底部固定层叠加顺序**：底部 Tab 栏 `z-40` > 手机端提交栏 `z-30`；壳层 `<main>` 的底部 padding 已按 Tab 栏预留，页面内不要再加 `padding-bottom`。

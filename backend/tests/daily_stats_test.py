@@ -10,7 +10,8 @@
 1. 空库返回完整日期序列（近 7 天 = 7 个点，升序、最后一个是今天），全 0 且不报错。
 2. 分日按**本地时区**折算而不是 UTC 日期：本地「今天 00:30」必须落在今天、
    「昨天 23:30」必须落在昨天（东八区下若退化成 UTC 分日，本项必然失败）。
-3. 同一天多笔订单的订单数、收入、失败数与失败率聚合正确。
+3. 同一天多笔订单的订单数、收入、失败数与失败率聚合正确；**未支付（pending）订单
+   计入订单数但不计入收入**（2026-10 收入口径修复：revenue 只统计已支付状态）。
 4. `orders.created_at` 两种时间戳格式（`YYYY-MM-DD HH:MM:SS` 与
    `YYYY-MM-DDTHH:MM:SS.ffffff`）都能被正确归日。
 5. 收入口径与后台概览卡片一致：不过滤 `order_type`，充值单也计入。
@@ -161,6 +162,13 @@ def test_aggregation_and_failure_rate():
     check("失败率 = 50.0%", today["failure_rate"] == 50.0, f"-> {today['failure_rate']}")
     check("totals 与 items 自洽", result["totals"]["orders"] == 2 and result["totals"]["revenue"] == 16.0 and result["totals"]["failed"] == 1)
     check("totals 失败率 = 50.0%", result["totals"]["failure_rate"] == 50.0, f"-> {result['totals']['failure_rate']}")
+    # 未支付（pending）订单：计入订单数与失败率分母，但**不计入收入**（口径修复回归项）。
+    add_order(db, "AGG_PENDING", local_utc_text(day_at(0, 12, 0)), total_amount=99.0, status="pending")
+    result = daily_stats(db, 7)
+    today = item_of(result, 0)
+    check("未支付订单计入订单数", today["orders"] == 3, f"-> {today['orders']}")
+    check("未支付订单不计入收入（99 元未计）", today["revenue"] == 16.0, f"-> {today['revenue']}")
+    check("totals 收入仍为 16.0", result["totals"]["revenue"] == 16.0, f"-> {result['totals']['revenue']}")
 
 
 def test_mixed_timestamp_formats_and_order_type():

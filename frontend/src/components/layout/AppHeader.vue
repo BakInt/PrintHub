@@ -1,5 +1,5 @@
 <script setup>
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRoute } from 'vue-router'
 import { Printer } from 'lucide-vue-next'
 import { Button } from '@/components/ui/button'
 import ThemeToggle from './ThemeToggle.vue'
@@ -10,6 +10,7 @@ import { useAuthStore } from '@/stores/auth'
 // 手机端隐藏文字导航入口（导航改由底部 Tab 栏承担，见 MobileTabbar），
 // 仅保留主题切换与登录/退出主按钮。
 const auth = useAuthStore()
+const route = useRoute()
 const { ordersTarget, mineTarget, isHome, isOrders, isMine } = useNavTargets()
 
 // RouterLink 的高亮由互斥的 isOrders/isMine 判定驱动（query 拆分视图），
@@ -36,6 +37,10 @@ const navLinkClass = (active) =>
       <nav class="hidden items-center gap-1 md:flex" aria-label="主导航">
         <Button as-child variant="ghost" size="sm" :class="navLinkClass(isHome)">
           <RouterLink to="/">打印</RouterLink>
+        </Button>
+        <!-- 【证照打印】隔离钩子（预算表内）：桌面导航 +「模板打印」；高亮用 route.path 内联判断 -->
+        <Button as-child variant="ghost" size="sm" :class="navLinkClass(route.path.startsWith('/cert'))">
+          <RouterLink to="/cert">模板打印</RouterLink>
         </Button>
         <Button v-if="auth.user" as-child variant="ghost" size="sm" :class="navLinkClass(isOrders)">
           <RouterLink :to="ordersTarget">订单</RouterLink>

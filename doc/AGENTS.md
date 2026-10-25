@@ -12,7 +12,7 @@
 
 ## 2. 技术栈
 
-- 后端：Python 3.12、FastAPI、SQLite、Pydantic Settings、bcrypt、PyPDF2、pdf2image、Pillow。
+- 后端：Python 3.12、FastAPI、SQLite、Pydantic Settings、bcrypt、PyPDF2、pdf2image、Pillow；`opencv-python-headless` 为证照打印的可选依赖（缺失时自动降级为手动四点裁剪，全流程仍可用）。
 - 文档转换：系统安装 LibreOffice、Poppler、CUPS client、完整字体库（Noto CJK/CJK-extra、Noto Core/Extra/Mono、Liberation、Carlito、Caladea、DejaVu、STIX、Noto Color Emoji）和 `zh_CN.UTF-8`。字体映射与回退由 `docker/fontconfig/49-cloud-print-aliases.conf` 提供，把 Windows/Office 专有字体名（宋体/黑体/微软雅黑/Times New Roman/Arial/Wingdings 等）映射到已装字体，并为所有字体追加 CJK + 数学符号 + 图案符号兜底，避免转换/打印乱码。
 - 打印：CUPS 命令、Windows PowerShell/SumatraPDF 分流（已移除 mock 模拟模式）。
 - 前端：Vue 3、Vite、Vue Router、Pinia、**Tailwind CSS v4 + shadcn-vue（reka-ui，reka-nova 风格，`typescript: false` 生成 JS 组件）**、lucide-vue-next、unovis（shadcn-vue Chart 底层）、vue-sonner（Toast）。组件一律来自 `frontend/src/components/ui/*`（shadcn-vue CLI 生成，`components.json` 驱动），页面层只用 Tailwind 工具类 + CSS 变量定制外观，禁止手写 CSS 复刻组件。品牌字/数字用自托管 Space Grotesk 变量字体（仅拉丁字符与数字，中文自动回退系统字体），文件在 `frontend/src/assets/fonts/`，由 `assets/index.css` 的 `@font-face` 与 `--font-display` 暴露。
@@ -29,18 +29,21 @@
 │   │   ├── main.py              # FastAPI 应用入口，注册中间件、路由和打印状态监控
 │   │   ├── bootstrap.py         # 首次部署引导：生成 config.json 并创建数据目录
 │   │   ├── config.py            # 唯一配置文件（config.json）的生成/读取、环境变量覆盖、按 mtime 热加载
-│   │   ├── database.py          # SQLite schema、轻量迁移、默认管理员和设置
+│   │   ├── database.py          # SQLite schema、轻量迁移、默认管理员和设置（含 cert.ensure_schema 钩子）
 │   │   ├── middleware.py        # 限流、安全响应头、生产配置校验；CSRF helper 尚未在 main.py 注册
 │   │   ├── models/schemas.py    # 请求/响应 Pydantic 模型和支付方式归一化
 │   │   ├── routers/             # public/auth/files/orders/user/admin API
+│   │   ├── cert/                # 【证照打印】隔离模块（见 6.9）：router/admin_router/schema/templates_seed/service/render/detect/pricing/cleanup
+│   │   ├── doc2up/              # 【两页合一打印】隔离模块（见 6.10）：router/service（两页缩排一页 A4 合成）
 │   │   ├── services/            # 文件、支付、计价、安全检测、认证会话、打印、打印派发、按日统计、站点设置服务
 │   │   │   ├── print_dispatch.py # 打印派发：支付完成后调度后台线程异步执行 dispatch_order_print（防重/等 paid/补派发）
-│   │   │   └── stats.py        # 后台「每日数据统计」：把 UTC 时间戳按**本地时区**聚合成每日订单数/收入/失败数
+│   │   │   └── stats.py        # 后台「每日数据统计」：把 UTC 时间戳按**本地时区**聚合成每日订单数/收入/失败数（收入只计已支付状态 PAID_STATUSES）
 │   │   └── utils/security.py    # bcrypt 密码哈希和自定义 HMAC token
 │   ├── tests/smoke_test.py      # 后端冒烟测试（import app.main 需要 pycups，适合容器内跑）
 │   ├── tests/config_test.py     # config.json 生成/热加载/管理员重置测试（不依赖 CUPS，本地可跑）
 │   ├── tests/queue_feature_test.py
 │   ├── tests/daily_stats_test.py # 「每日数据统计」本地时区分日聚合专项测试（不依赖 CUPS，本地可跑）
+│   ├── tests/cert_feature_test.py # 【证照打印】cert 模块专项测试（不依赖 CUPS/OpenCV，本地可跑）
 │   ├── requirements.txt
 │   └── run.py                   # 本地开发入口
 ├── frontend/
@@ -53,6 +56,8 @@
 │   │   ├── stores/theme.js      # 亮/暗主题状态：localStorage 记忆 + 跟随系统，切换 html.dark 类
 │   │   ├── composables/useNavTargets.js  # 顶栏/底部 Tab 共用的导航目标与互斥高亮判定
 │   │   ├── views/               # 首页、认证、支付、个人中心、后台（模板用 shadcn 组件 + Tailwind）
+│   │   ├── cert/               # 【证照打印】隔离模块前端（见 6.9）：CertPortal/CertAdminPanel（AdminView「证件照管理」tab 面板）/routes/constants/api + modules/（ModuleShell + IdCard/Hukou 模块页）+ components/（PortalCard/SlotUploader/CropOverlay/CertOrderPanel）
+│   │   ├── doc2up/             # 【两页合一打印】隔离模块前端（见 6.10）：Doc2UpModule（/cert/doc-2up）+ api/routes
 │   │   ├── components/
 │   │   │   ├── layout/          # AppHeader.vue / MobileTabbar.vue / ThemeToggle.vue（布局壳）
 │   │   │   ├── DailyStatsCard.vue # 后台概览「每日数据统计」卡片：shadcn Chart(Unovis) 双轴柱线图
@@ -88,8 +93,8 @@
 
 1. 导入时先调用 `bootstrap()`（`backend/app/bootstrap.py`）：确保配置目录里存在 `config.json`（缺失就按默认值生成、含随机 `app_secret`）并创建数据库/上传/备份/日志/CUPS 驱动目录；随后 `get_settings()` 读取配置并打印配置目录、配置文件、数据库位置。
 2. 注册 CORS、限流、TrustedHost 和安全响应头中间件，并注册全局兜底异常处理 `@app.exception_handler(Exception)`：未捕获异常记录堆栈后返回 `{"detail": "服务器内部错误，请稍后重试"}` 的 JSON，避免前端只拿到 FastAPI 默认的纯文本 500 "Internal Server Error"。FastAPI 文档端点（`/docs`、`/redoc`、`/openapi.json`）只在 `environment=development` 时开启，其它环境一律禁用，不对外暴露 API 定义（安全修复 V-06）。
-3. 启动时先调用 `_warn_data_outside_config_root()`（容器里若数据库/上传等路径跑到配置目录之外会打印警告，提示重建容器会丢数据），再调用 `validate_production_config(settings)`、`init_db()`、`start_print_status_monitor()`、`start_auto_backup_scheduler()`。
-4. 注册路由：`public`、`auth`、`files`、`orders`、`admin`、`admin.setup_router`、`user`。
+3. 启动时先调用 `_warn_data_outside_config_root()`（容器里若数据库/上传等路径跑到配置目录之外会打印警告，提示重建容器会丢数据），再调用 `validate_production_config(settings)`、`init_db()`、`start_print_status_monitor()`、`start_auto_backup_scheduler()`，以及证照打印的 `cert.start_cleanup_scheduler()`（生成件保留期清理线程，见 6.9）。
+4. 注册路由：`public`、`auth`、`files`、`orders`、`admin`、`admin.setup_router`、`user`，以及证照模块的 `cert.router` 与 `cert.admin_router`（见 6.9）。
 5. 在所有路由之后注册前端静态文件服务（`/assets`、`/static`）和 catch-all 路由。
 
 `backend/app/database.py` 负责：
@@ -121,7 +126,7 @@
   - 普通失败：401，`detail = {"message": "用户名或密码错误，还可尝试 N 次", "remaining_attempts": N}`；
   - 达到阈值（含锁定期间重试）：429，`detail = {"message": "账号已锁定，请 N 分钟后重试", "locked": true, "retry_after_minutes": N}`。
   - 阈值/时长来自**站点设置**（数据库 `settings` 表的 `login_lock_threshold`/`login_lock_minutes`，后台「站点设置」页可改；建库时从 `config.json` 的 `login_lock_threshold`/`login_lock_seconds` 播种，缺键/非法值回退 config.json），读取逻辑在 `services/site_settings.py`，保存后下一笔登录请求即生效。对任何用户名都返回同样的提示，不泄露账号是否存在。
-- 敏感路径专项限速（安全修复 V-04）：`/api/auth/login`、`/api/auth/register`、`/api/upload` 按 IP 限制 `sensitive_rate_limit_per_minute`（config.json 部署级键，默认 10 次/分钟，0=关闭），实现在 `middleware.py` 的 `RateLimitMiddleware._limit_for_path()`；全局默认仍是 `rate_limit_requests` 次/窗口。
+- 敏感路径专项限速（安全修复 V-04）：`/api/auth/login`、`/api/auth/register`、`/api/upload`、`/api/cert/generate`（证照生成，见 6.9）按 IP 限制 `sensitive_rate_limit_per_minute`（config.json 部署级键，默认 10 次/分钟，0=关闭），实现在 `middleware.py` 的 `RateLimitMiddleware._limit_for_path()`；全局默认仍是 `rate_limit_requests` 次/窗口。
 - 管理员接口通过 `admin_user()` 检查 `is_admin`，普通用户会返回 403“无效请求”。
 
 ## 6. 核心业务流
@@ -294,6 +299,28 @@
   - 后续一致：事务内重读余额做上限校验 → `UPDATE users SET balance = ROUND(balance + ?, 2)` → 写 `redemption_logs` → `db.commit()`；任何一步失败都 `rollback()`，保证「占用次数 + 加余额 + 写日志」要么全成功要么全回滚。**每用户上限的判定必须放在 `BEGIN IMMEDIATE` 之内复查一次**，只靠事务外预检在并发下会重复入账。
 - **命名陷阱（历史 500 的根因）**：`backend/app/routers/user.py` 必须用别名引入服务函数（`from ..services.redemption import redeem as redeem_redemption_code`）。若写成 `from ..services.redemption import redeem as redeem_code`，模块级名字 `redeem_code` 会被下面同名的路由函数覆盖，路由就会调用自己（`AttributeError: 'sqlite3.Connection' object has no attribute 'code'`），前端只看到纯文本 `Internal Server Error`。
 
+### 6.9 证照打印（隔离模块 app/cert/ + frontend/src/cert/）
+
+方案依据 `doc/CERT_PRINT_PLAN.md`；实现 100% 集中在 `backend/app/cert/` 与 `frontend/src/cert/` 两个目录，主程序只留预算表内的少量钩子（见下），可整体回滚（删两个 cert 目录 + 还原钩子）。
+
+**硬性隔离约束**：新增文件只进两个 cert 目录（唯一例外 `backend/tests/cert_feature_test.py`）；主程序对 cert 的引用只允许出现在：`main.py`（include_router ×2 + 启动清理线程）、`database.py`（`init_db()` 内 `ensure_schema()`，函数内延迟导入）、`services/pricing.py`（`calculate_files_price_detail()` 末尾 `apply_cert_pricing()`，函数内延迟导入）、`middleware.py`（敏感路径集合 + `/api/cert/generate`）、`requirements.txt`（+ `opencv-python-headless`）、前端 `router/index.js`（引入 `cert/routes.js`）、`AppHeader.vue`（桌面导航项）、`MobileTabbar.vue`（三格扩四格）、`AdminView.vue`（「证件照管理」tab：import + 内嵌 `cert/CertAdminPanel.vue`，位于「配置」下方）、`AuthView.vue`（登录后按 `?redirect=` 站内回跳，只允许 `/` 开头且非 `//` 的路径）。依赖方向 cert → core 允许，core → cert 仅上述注册点。
+
+- **数据表（cert/schema.py 自持）**：`cert_templates`（code 唯一、layout_json 版式 + 门户卡片元数据、price 独立单价 NULL=回退标准价、enabled 启停、sort）与 `cert_docs`（生成件记录：user_id/template_code 冗余/pdf_file_id/page_count/used_manual_crop/status/expires_at）。`ensure_schema()` 幂等：建表 + 播种 3 个内置模板（id_card / hukou / doc2up——doc2up 是两页合一打印的「登记行」，无 slots 版式、layout_json 仅携带门户卡片元数据，用于后台统一启停/独立单价与门户卡片驱动，见 6.10；来自 `templates_seed.py`，P0 版式只随代码发布——每次启动同步 name/layout_json/sort 但**不覆盖**后台改过的 price/enabled，且**清理已从种子里移除的内置模板**）+ 播种设置键 `cert_retention_hours`（默认 24，0=立即到期）与 `cert_daily_generate_limit`（默认 20，0=不限制）。
+- **生成管线（cert/render.py + detect.py）**：槽位照片以**内存字节流**直接进管线（EXIF 矫正 → 裁剪 → 增强 → LANCZOS 重采样 → 300dpi A4 合成 → Pillow 存单页 PDF（resolution=300）），原始照片全程不落盘（比临时目录更强）。自动识别是可选增强：`detect.py` 导入 OpenCV 失败自动降级，手动四点裁剪用纯 Pillow `Image.transform(QUAD)`（坐标归一化 0–1，顺序 TL,TR,BR,BL）兜底；照片短边 < 目标像素 60% 或识别置信度不足时按槽位返回 `DETECT_FAILED`（detail 结构 `{code, slots}`），前端仅对失败槽位弹四点裁剪。生成件写 `files` 表（`is_safe=1` 受信产物、`needs_rasterize=0`、`black_coverage/page_coverages` 为 NULL——照片页覆盖率无意义），`uploads/<file_id>/converted.pdf`；身份证槽位 85.6×54mm 1:1 精确缩放；户口本模板是**户主页 + 个人页两个槽位（holder/personal）上下排布排入同一页 A4**（各 95×130mm contain 包围框，y=13.5/153.5、x=57.5 居中同列，与身份证正反面版式一致，正式上线前须实物样张校准）。
+- **计价钩子（cert/pricing.py 的 `apply_cert_pricing`）**：在 `calculate_files_price_detail()` 标准计价完成后对 `cert_docs.pdf_file_id` 命中的文件重算——模板 `price` 非空 → 单价 × 页数 × 份数（前端统一「元/页」；证照件 1 页/版，doc2up 按版面数，见 6.10）；为空 → 回退 standard 单面价（按页，与站点定价模式无关）；**doc2up 登记行例外：未设价时不进钩子**，保持主程序标准/覆盖率计价（与登记前一致）；**任何情况下证照件不落入 `coverage_tiered`**。混合订单逐文件分支后求和并重建折扣明细；detail 携带 `cert_files`（模板名/单价/mode）随 `orders.pricing_detail` 入库。与 `services/pricing.py` 互相都不在模块顶层 import 对方（延迟导入防加载环）。
+- **清理与隐私**：`cert/cleanup.py` 守护线程每小时清 `expires_at <= now` 的生成件；跳过仍被 `pending/paid` 订单引用的文件；磁盘文件必删（隐私红线），`files` 行仅无订单引用时可删——被历史订单引用时置 `status='expired'` 保留外键完整性（预览自然 404）。用户可 `DELETE /api/cert/docs/{id}` 手动删除（打印队列中的除外）。日志只记 doc_id/模板/用户/结果。
+- **前端模块化**：门户 `/cert` 完全由 `GET /api/cert/templates` 驱动（模板停用卡片即时消失、模块页深链显示「已下架」）；一个功能 = 一个模块页文件（`modules/IdCardModule.vue` 等，声明 templateCode/slots/文案），公共骨架 `ModuleShell.vue` 编排「槽位上传 → 生成 → A4 预览 → 下单」，模块间零引用。**模块页路由规则：所有功能模块页（含 doc2up）统一挂在 `/cert/` 下，后缀 = 模板/模块 code 的 kebab-case**（`id_card`→`/cert/id-card`、`hukou`→`/cert/hukou`、`doc2up`→`/cert/doc-2up`），门户 `/cert`。下单闭环不改现有接口：`/api/price`（file_ids 模式，计价钩子内部生效）+ `POST /api/payment/create`（balance，余额一键打印），彩色选项严格跟随 `/api/print-options`。证件照管理已并入后台 AdminView 的「证件照管理」tab（原 `/cert-admin` 独立小页与路由已移除，面板组件 `cert/CertAdminPanel.vue`），列出**全部**模板（含 doc2up），设置项完全统一：启停 + 独立单价（「元/页」）+ 保留期/每日上限（证照件 1 页/版、doc2up 按版面数计）。新增一个证照功能的成本 = 1 个模块页文件 + `cert/routes.js` 一行 + `constants.js` 路由映射一行 + `templates_seed.py` 一条模板数据，主程序零改动。
+
+### 6.10 两页合一打印（隔离模块 app/doc2up/ + frontend/src/doc2up/）
+
+门户卡片（`/cert` 里的「两页合一打印」，由 `cert_templates` 的 doc2up 登记行驱动、随后台「证件照管理」启停显隐，不再是无开关的静态卡）进入模块页 `/cert/doc-2up`：上传文档 → 复用主程序 `POST /api/upload`（转换 PDF + 安全检测）→ `POST /api/doc2up/create {file_id}` 合成 → 预览 → 余额下单。登记行停用或缺失时，模块页深链显示「已下架」（与 cert 模块页行为一致）、`POST /api/doc2up/create` 返回 400「两页合一打印功能已下架」。
+
+- **合成规则（service.py）**：源 PDF 按块（10 页/块）经 pdf2image/pdftoppm 光栅化（峰值内存可控），每页旋转 90° 顺时针后两页拼一页 A4——竖向文档 → A4 竖版上下两栏（每栏 210×148.5mm）；横向文档 → A4 横版左右两栏（每栏 148.5×210mm）；缩放比均为 1/√2。版式方向由**首页**决定、全文档统一旋转（混合方向文档中不匹配页躺放，与实体打印机 2-up 一致）；奇数页最后一页单独占半版；半版交界画浅灰裁切线。输出 300dpi 纯位图 PDF（Pillow `save_all` + 生成器逐版追加，页尺寸自动为 A4）。
+- **入库**：写 `files` 表（user_id=请求用户、`原名-两页合一.pdf`、page_count=版面数、is_safe=1 受信产物、needs_rasterize=0、black_coverage/page_coverages 由合成位图实时统计——覆盖率计价模式下按版面覆盖率正确计价）。源文件须存在、`is_safe=1` 且归属当前用户（或匿名访客上传，V-07 同级；非属主与不存在同响应 404）。
+- **计价/下单与登记行**：合成时把产物登记进 `cert_docs`（`status='doc2up'`、`template_code='doc2up'`、page_count=版面数、`expires_at` 占位 2999 年）——后台「证件照管理」给模板设置的独立单价经证照计价钩子按 **单价×版面数×份数** 生效；未设价时该登记行不进钩子，保持标准按页/覆盖率计价（页数=版面数，与登记前行为一致）。`status='doc2up'` 与证照件的 `'active'` 区分：**不计入**证照保留期清理与证照每日生成上限（两处查询只统计 `'active'`），文件缓存仍走主程序统一清理。双面勾选映射 `print_settings.merge_duplex`（单文件订单即本文件双面，按 ceil(页数/2)×双面价），前端仅当打印机 `is_support_auto_duplex` 且合计页数≥2 时展示；彩色跟随 `/api/print-options`。
+- **前端复用**：模块页 `frontend/src/doc2up/Doc2UpModule.vue` 复用 cert 的 `CertOrderPanel`（该面板已通用化：`template` 可选、`supportDuplex` 开关、`product-name` 展示名；证照模式仍带知情确认声明，文档模式为普通确认勾选）。
+- **隔离钩子（超出 cert 预算表的新增行，合计 4 行）**：`main.py`（+1 import、+1 include_router）、`frontend/src/router/index.js`（+1 import、+...doc2upRoutes 展开）；门户卡片由 `cert_templates` 的 doc2up 登记行驱动（`cert/templates_seed.py` 播种、`cert/CertPortal.vue` 模板渲染，均为 cert 模块文件，不算主程序改动）。可回滚：删两个 doc2up 目录 + 还原 4 行钩子（同时从种子里移除 doc2up 登记行）。
+
 ## 7. API 路由概览
 
 公开接口：
@@ -339,9 +366,21 @@
 - `POST /api/user/recharge`：创建余额充值订单。
 - `POST /api/user/redeem`：个人中心「兑换码充值」，`code` 必填，校验存在/过期/剩余次数后按面额加余额并写 `redemption_logs`；错误统一返回标准 JSON（`detail` 为 `{code, message}` 的中文提示），不返回纯文本 500。详见 6.8。
 
+证照打印接口（`app/cert/router.py`，见 6.9）：
+
+- `GET /api/cert/templates`：公开只读，返回 `enabled=1` 的模板（槽位摘要、`price_mode`、门户卡片元数据 `card`），门户卡片完全由它驱动。
+- `POST /api/cert/generate`：登录 + 敏感路径限速 + 每日上限（超限 429）；multipart 入参 `template_code`、可选 `cut_guides`、每槽位图片 `slot_<key>`、可选手动四点 JSON `quad_<key>`（归一化 0–1，TL,TR,BR,BL）。自动识别失败且无手动四点 → 400 `detail={"code":"DETECT_FAILED","slots":[...]}`。原始照片全程不落盘。成功返回 `{cert_doc_id, file_id, page_count, preview_url, expires_at}`。
+- `GET /api/cert/docs`：当前用户生成件分页（limit 1-50 / offset）。
+- `GET /api/cert/docs/{id}/preview`：生成件 PDF inline 预览（属主或管理员，非属主与不存在同响应 404）。
+- `DELETE /api/cert/docs/{id}`：属主手动删除（被 pending/paid 订单引用时 400）。
+
+两页合一打印接口（`app/doc2up/router.py`，见 6.10）：
+
+- `POST /api/doc2up/create`：登录；入参 `{file_id}`（主程序 `POST /api/upload` 的产物），把已转换好的 PDF 合成为两页合一打印件（每两页旋转 90° 缩排到一页 A4），返回 `{file_id, source_file_id, page_count, preview_url}`（预览复用 `/api/files/{id}/preview`）。受 `cert_templates` 的 doc2up 登记行启停控制：停用后返回 400「两页合一打印功能已下架」。
+
 后台接口均在 `/api/admin` 下，需要管理员 token 或 session，包含：
 
-- `/dashboard`、`/daily-stats`（后台概览「每日数据统计」：`days` 取 1-90、默认 7，按**本地时区**返回每日订单数、收入、打印失败数与失败率，聚合逻辑在 `backend/app/services/stats.py`；收入口径与 `/dashboard` 一致——统计 `orders` 全表、不按 `order_type` 过滤）、`/orders`、`/orders/{id}/detail`、`/orders/{id}/mark-complete`、删除单个订单、删除未支付订单、批量删除未支付订单。
+- `/dashboard`、`/daily-stats`（后台概览「每日数据统计」：`days` 取 1-90、默认 7，按**本地时区**返回每日订单数、收入、打印失败数与失败率，聚合逻辑在 `backend/app/services/stats.py`；**收入只计已支付订单**（`status` ∈ `PAID_STATUSES` = paid/printing/completed/print_failed，常量由 `stats.py` 导出、`/dashboard` 复用）——待支付（pending）订单计入订单数但**不计入销售额**，两处口径一致，不按 `order_type` 过滤）、`/orders`、`/orders/{id}/detail`、`/orders/{id}/mark-complete`、删除单个订单、删除未支付订单、批量删除未支付订单。
 - `/file-cache/cleanup`：按时段统计或清理上传缓存，可选择是否包含已关联订单文件。
 - `/users`：创建、编辑、启停、删除用户，余额增减或设置；保护最后一个管理员和当前管理员。
 - `/redemptions`：手动新增（`code` 可留空，留空由后端自动生成随机码；可传 `per_user_max_times` 设置「每个用户最大兑换次数」，正整数=限制、0 或缺省=不限制；有效期用 `expiry_mode`（`days`/`date`）+ `expire_date` 二选一）、批量随机生成（同样支持 `expiry_mode`/`expire_date`）、列表与搜索、兑换记录、删除；详见 6.8。
@@ -350,10 +389,11 @@
 - `/payment-settings`、`/payment-test`：易支付配置、配置校验、测试单查询和模拟成功。
 - 打印机管理（实现于 `backend/app/services/cups_printer.py`）：`/printer-system`（运行环境与 CUPS 连通性诊断）、`/printers`（枚举真实队列）、`/printer-drivers` 与 `/printer-drivers/ppd`（驱动列表与上传 PPD）、`/printer-info`、`/printer-uri/probe`、`/printers/{name}`（查询/编辑/删除）、`/printers/{name}/default`、`/printers/default/clear`、`/printers/{name}/enabled`、`/printers/{name}/test-page`、`/printers/{name}/test-result`、`/printers/{name}/jobs`、`/cups/logs`、`/cups/queues`、`/cups/diagnostics`。打印机配置记录带 `is_support_color`、`is_support_auto_duplex` 两个能力字段，`GET /api/admin/printers`（列表）与 `GET /api/admin/printers/{printer_name}`（详情）都会返回；编辑走 `PATCH|PUT /api/admin/printers/{printer_name}`（payload 为 `PrinterUpdate`，两项能力为可选 `bool | None`，None=不修改），本仓库没有新增打印机的 POST 路由。
 - `/alerts/{id}/handle`：处理异常告警。
+- 证照打印管理（`app/cert/admin_router.py`，独立于 admin.py；后台 AdminView「证件照管理」tab / `cert/CertAdminPanel.vue` 使用）：`GET|PATCH /api/admin/cert-templates[/{code}]`（列表含停用模板；PATCH 改 `price`（传 null = 清空独立价回退标准页价）与 `enabled`；**全部模板（含 doc2up）设置项统一**——doc2up 设价后经其 cert_docs 登记行按 单价×版面数×份数 生效）、`GET|PUT /api/admin/cert-settings`（`cert_retention_hours` / `cert_daily_generate_limit`，保存即时生效；上限只统计 `status='active'`，doc2up 登记行不计入）。
 
 ## 8. 前端结构和页面
 
-`frontend/src/App.vue` 是全局壳：`<a class="sr-only">` 键盘跳转入口（focus 时出现，指向 `#main-content`），`<AppHeader />` 顶栏（品牌 logo 徽标内嵌 lucide Printer 图标 + 文案「PrintHub 云打印」，桌面端 md+ 显示文字导航：打印/订单/个人中心/后台，右侧是 `ThemeToggle` 亮暗切换按钮与登录/退出按钮），`<MobileTabbar />` 手机端（< md）底部三格 Tab（首页/订单/我的，admin 路由下不渲染），以及全局 `<Toaster />`（vue-sonner 轻提示）。导航目标与互斥高亮由 `src/composables/useNavTargets.js` 提供（`ordersTarget`/`mineTarget` 带 `?tab=`，`isOrders`/`isMine` 互斥，规避 RouterLink 按路径自动高亮忽略 query 的坑）。应用启动时调用 `auth.loadMe()` 和 `site.load()`（后者拉取 `GET /api/site-settings` 并全局应用网页标题、favicon、备案条——登录页/前台/后台共用，见 `stores/site.js`；favicon 通过替换唯一的 `<link rel="icon">` 生效，未配置时回退 index.html 的内联 SVG 与默认标题）。前台路由在 `<main>` 内 RouterView 之后渲染 `<IcpFooter />`（ICP 备案条：仅当后台填写了备案号才渲染，非固定定位随内容排在页尾，居中小字、`text-muted-foreground`，点击在新窗口打开 `https://beian.miit.gov.cn/`；手机端位于底部 Tab 栏预留 padding 之内侧，不会重叠）；后台路由的备案条由 AdminView 自己在内容底部渲染。**后台路由（/admin）分支**：`main` 在 admin 路由下移除 `max-w-7xl` 限宽与内边距（后台由 AdminView 的 SidebarProvider 全高布局撑满视口；这个分支不能省——否则整个后台被前台居中盒框住，固定定位的侧边栏会与其占位 div 错位）。
+`frontend/src/App.vue` 是全局壳：`<a class="sr-only">` 键盘跳转入口（focus 时出现，指向 `#main-content`），`<AppHeader />` 顶栏（品牌 logo 徽标内嵌 lucide Printer 图标 + 文案「PrintHub 云打印」，桌面端 md+ 显示文字导航：打印/模板打印/订单/个人中心/后台，右侧是 `ThemeToggle` 亮暗切换按钮与登录/退出按钮），`<MobileTabbar />` 手机端（< md）底部三格 Tab（首页/订单/我的，admin 路由下不渲染），以及全局 `<Toaster />`（vue-sonner 轻提示）。导航目标与互斥高亮由 `src/composables/useNavTargets.js` 提供（`ordersTarget`/`mineTarget` 带 `?tab=`，`isOrders`/`isMine` 互斥，规避 RouterLink 按路径自动高亮忽略 query 的坑）。应用启动时调用 `auth.loadMe()` 和 `site.load()`（后者拉取 `GET /api/site-settings` 并全局应用网页标题、favicon、备案条——登录页/前台/后台共用，见 `stores/site.js`；favicon 通过替换唯一的 `<link rel="icon">` 生效，未配置时回退 index.html 的内联 SVG 与默认标题）。前台路由在 `<main>` 内 RouterView 之后渲染 `<IcpFooter />`（ICP 备案条：仅当后台填写了备案号才渲染，非固定定位随内容排在页尾，居中小字、`text-muted-foreground`，点击在新窗口打开 `https://beian.miit.gov.cn/`；手机端位于底部 Tab 栏预留 padding 之内侧，不会重叠）；后台路由的备案条由 AdminView 自己在内容底部渲染。**后台路由（/admin）分支**：`main` 在 admin 路由下移除 `max-w-7xl` 限宽与内边距（后台由 AdminView 的 SidebarProvider 全高布局撑满视口；这个分支不能省——否则整个后台被前台居中盒框住，固定定位的侧边栏会与其占位 div 错位）。
 
 亮/暗主题：`frontend/src/stores/theme.js` 维护主题状态（`localStorage['cloud-print-theme']` 优先，未选择过则跟随 `prefers-color-scheme` 并实时监听系统变化），通过**切换 `<html>` 上的 `.dark` 类**生效（shadcn-vue CSS 变量主题方案）。变量层在 `frontend/src/assets/index.css`（`:root` 亮色块 + `.dark` 暗色块，shadcn 全套 token + 品牌 `--primary`/`--chart-1..5`/语义 `--success`/`--warning`/`--brand-*`）；页面与组件一律用 Tailwind 工具类（`bg-card`、`text-muted-foreground` 等，编译后指向 CSS 变量），**禁止写死色值**。`frontend/index.html` 的 `<head>` 内联脚本在样式生效前切换 `.dark` 类防首屏闪烁；`html.theme-ready` 后才开启 0.25s 颜色过渡（尊重 `prefers-reduced-motion`）。详见 `doc/UI_ADAPTATION.md` 第 5.5 节。
 
@@ -459,6 +499,20 @@ CONFIG_ROOT=/tmp/cloud_print_test .venv/bin/python tests/smoke_test.py
 
 冒烟测试 import `app.main` 时会加载打印服务，需要 `pycups` 和可用的 CUPS 环境，因此更适合在容器内跑；它会用临时配置目录/数据库/上传目录和测试易支付参数，并对 `print_pdf` 打桩，订单派发链路无需真实打印机。
 
+证照打印专项回归测试（不依赖 pycups/CUPS/OpenCV/FastAPI 应用，Windows 本地可跑，覆盖 schema 播种幂等与后台数据保留、mm→px 换算与槽位定位（合成位图采样）、手动四点透视、PDF 组装页尺寸、计价钩子三分支（独立价/回退 standard/拒绝 coverage）、每日上限、无 OpenCV 降级下的生成端到端（files/cert_docs 入库 + coverage 为 NULL）、清理任务（跳过 pending/paid 订单、历史订单引用置 expired）、属主校验）：
+
+```bash
+cd backend
+python tests/cert_feature_test.py
+```
+
+两页合一专项回归测试（不依赖 pycups/CUPS/poppler/FastAPI 应用——光栅化函数注入假实现，Windows 本地可跑，覆盖竖向/横向版式与旋转方向角点校验、裁切线、奇数页配对、覆盖率计算、合成服务端到端（files 行字段/输出 PDF 尺寸/命名/属主）、归属与安全校验）：
+
+```bash
+cd backend
+python tests/doc2up_feature_test.py
+```
+
 前端构建：
 
 ```bash
@@ -506,6 +560,7 @@ docker compose logs -f cloud-print
 - 修改主题（亮/暗）时：颜色必须走 `frontend/src/assets/index.css` 定义的 CSS 变量（shadcn token：`--background`/`--card`/`--primary`/`--muted-foreground`/...，以及扩展的 `--success`/`--warning`/`--chart-1..5`/`--brand-*`），页面里用 Tailwind 工具类（`bg-card`、`text-primary` 等）引用，**禁止写死 hex/rgba**；亮色改 `:root` 块、暗色改 `.dark` 块，两块变量集合必须保持一致（PC 与移动端共用同一套亮/暗变量，不再区分设备配色）。主题切换是 `<html class="dark">`（`stores/theme.js` 的 `applyTheme()` 与 `index.html` 内联脚本共用同一规则；localStorage 键仍为 `cloud-print-theme`）。移动端断点统一用 Tailwind 的 `md`（768px）。字体改动只动 `assets/index.css` 顶部的 `@font-face` 与 `@theme` 里的 `--font-sans`/`--font-display` 栈（`assets/fonts/space-grotesk-latin.woff2` 由 Vite 打包，不要删除；它只覆盖拉丁字符与数字，中文自动回退系统字体）。规范见 `doc/UI_ADAPTATION.md` 第 5.5 节。
 - `frontend/dist/`、`frontend/node_modules/`、`release/` 和同步冲突副本正常编码不要手动编辑；Docker 构建会在镜像内重新生成前端产物。
 - 仓库可能出现 NAS 同步冲突副本。除非明确处理同步冲突，否则不要修改这些副本文件。
+- 修改证照打印时（详见 6.9）：遵守隔离铁律——新增文件只进 `backend/app/cert/` 与 `frontend/src/cert/`（唯一例外 `backend/tests/cert_feature_test.py`），主程序改动不得超出 6.9 列出的钩子清单；`cert/schema.py` 与 `services/pricing.py`、`database.py` 互相都用**函数内延迟导入**（顶层互相 import 会成环）；清理任务删 `files` 行前必须检查 `order_items` 引用（FK 强制），被引用时置 `status='expired'` 而不是删行；证照件的 `black_coverage/page_coverages` 必须保持 NULL，计价钩子保证其不落入 `coverage_tiered`；不装 OpenCV 时全流程仍须可用（手动四点裁剪兜底，`detect.py` 的 import 守卫不能删）；改动后跑 `python tests/cert_feature_test.py`。
 
 ## 11. 当前实现与原 PRD 的差异
 
@@ -647,6 +702,8 @@ AdminView.vue 打印机 tab
 - 数据表、默认设置、旧库迁移：`backend/app/database.py`，同时检查后台设置表单和 `backend/tests/smoke_test.py`。
 - 后台概览「每日数据统计」（按本地时区分日聚合 + shadcn Chart/unovis 双轴柱线图）：`backend/app/services/stats.py`、`backend/app/routers/admin.py`（`GET /api/admin/daily-stats`，别名引入 `daily_stats` 为 `build_daily_stats`）、`frontend/src/components/DailyStatsCard.vue`、`frontend/src/components/ui/chart/`（shadcn 官方图表组件）、`frontend/src/views/AdminView.vue`（概览 tab）、`backend/tests/daily_stats_test.py`。
 - 亮/暗主题（`.dark` 类切换 + CSS 变量）：`frontend/src/assets/index.css`（`:root`/`.dark` 变量块、`@font-face`、`@theme` 映射）、`frontend/src/stores/theme.js`（状态/记忆/跟随系统/切类）、`frontend/src/components/layout/ThemeToggle.vue`（切换按钮）、`frontend/index.html`（favicon、meta/og/theme-color、防闪烁内联脚本）。规范见 `doc/UI_ADAPTATION.md` 第 5.5 节。
+- 证照打印（隔离模块，见 6.9）：后端 `backend/app/cert/`（schema/templates_seed/service/render/detect/pricing/router/admin_router/cleanup）+ 钩子在 `main.py`/`database.py`/`services/pricing.py`/`middleware.py`；前端 `frontend/src/cert/`（CertPortal/CertAdminPanel/routes/constants/api/modules/components）+ 钩子在 `router/index.js`/`AppHeader.vue`/`MobileTabbar.vue`/`AdminView.vue`（「证件照管理」tab）/`AuthView.vue`（redirect 回跳）；专项测试 `backend/tests/cert_feature_test.py`。
+- 两页合一打印（隔离模块，见 6.10）：后端 `backend/app/doc2up/`（router/service，create 受 cert_templates doc2up 登记行启停控制）+ 钩子在 `main.py`；前端 `frontend/src/doc2up/`（Doc2UpModule/api/routes）+ 钩子在 `router/index.js`，门户卡片由 doc2up 登记行驱动（`cert/CertPortal.vue` 模板渲染、`cert/constants.js` 路由映射），下单面板复用 `cert/components/CertOrderPanel.vue`（`supportDuplex` 开关）；专项测试 `backend/tests/doc2up_feature_test.py`。
 - 前端组件体系（Tailwind v4 + shadcn-vue）：`frontend/components.json`（CLI 配置）、`frontend/src/components/ui/*`（官方生成组件，勿手改外观逻辑）、`frontend/src/lib/utils.js`（`cn()`）、`frontend/src/components/layout/*`（AppHeader/MobileTabbar/ThemeToggle）、`frontend/src/composables/useNavTargets.js`（导航目标/高亮）、`frontend/vite.config.js`（`@tailwindcss/vite` + `@` 别名）、`frontend/jsconfig.json`。新增组件：`pnpm dlx shadcn-vue@latest add <component>`。
 
 文档或代码变更后的最低验证建议：

@@ -102,7 +102,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { LogIn, TriangleAlert, UploadCloud } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
 import { buildApiUrl, request } from '@/api/client'
@@ -115,6 +115,14 @@ import { Label } from '@/components/ui/label'
 
 const auth = useAuthStore()
 const router = useRouter()
+const route = useRoute()
+
+// 登录后回跳：?redirect= 只允许站内路径（以 / 开头且非 //），防开放重定向；缺省回首页。
+function postLoginTarget() {
+  const target = route.query.redirect
+  if (typeof target === 'string' && target.startsWith('/') && !target.startsWith('//')) return target
+  return '/'
+}
 const mode = ref('login')
 const username = ref('')
 const password = ref('')
@@ -199,7 +207,7 @@ async function submit() {
   try {
     if (mode.value === 'login') await auth.login(username.value, password.value, captcha.value)
     else await auth.register(username.value, password.value, email.value, captcha.value)
-    router.push('/')
+    router.push(postLoginTarget())
   } catch (err) {
     error.value = err.message
     const detail = err?.data?.detail

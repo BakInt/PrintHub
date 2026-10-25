@@ -13,6 +13,10 @@ from .config import get_settings
 from .database import init_db
 from .middleware import RateLimitMiddleware, maintenance_middleware, security_headers_middleware, validate_production_config
 from .routers import admin, auth, files, orders, public, user
+# 【证照打印】隔离钩子（预算表内）：独立模块，全部实现位于 app/cert/。
+from .cert import admin_router as cert_admin_router, router as cert_router, start_cleanup_scheduler
+# 【两页合一打印】隔离钩子：独立模块，全部实现位于 app/doc2up/（见 AGENTS 6.10）。
+from .doc2up import router as doc2up_router
 from .services.backup import start_auto_backup_scheduler
 from .services.print_monitor import start_print_status_monitor
 
@@ -101,6 +105,7 @@ def startup() -> None:
     init_db()
     start_print_status_monitor()
     start_auto_backup_scheduler()
+    start_cleanup_scheduler()
 
 
 app.include_router(public.router)
@@ -110,6 +115,9 @@ app.include_router(orders.router)
 app.include_router(admin.router)
 app.include_router(admin.setup_router)
 app.include_router(user.router)
+app.include_router(cert_router)
+app.include_router(cert_admin_router)
+app.include_router(doc2up_router)
 
 FRONTEND_DIST = Path(__file__).parent.parent / "frontend-dist"
 if FRONTEND_DIST.exists() and FRONTEND_DIST.is_dir():
